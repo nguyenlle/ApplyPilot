@@ -1,4 +1,21 @@
 # User data (NEVER commit)
+.private/
+.venv/
+.pytest_cache/
+.ruff_cache/
+resume/
+*.db-*
+*.sqlite*
+*.log
+*.har
+storage-state*.json
+cookies*.json
+session*.json
+searches.yaml
+runtime.yaml
+artifact-manifest*.json
+tmp/
+output/
 profile.json
 resume.txt
 resume.pdf
