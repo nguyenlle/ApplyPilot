@@ -12,6 +12,7 @@ certificate. No real employer application has been submitted or verified.
 | `applypilot --version` | 0.3.0 | Preserved upstream package version |
 | `ruff check src/` | Passed | Whole source tree |
 | `pytest tests/ -v -p no:cacheprovider` | 180 passed in 20.55 seconds | Whole suite in clean venv; actual local Chromium tests included |
+| GitHub Actions Linux CI | Passed on Python 3.11 and 3.12 | [Run 35063679464](https://github.com/nguyenlle/ApplyPilot/actions/runs/35063679464), implementation commit `55749f1` |
 | `applypilot doctor --tier 1` | Passed | Discovery configuration/imports/browser |
 | Full `applypilot doctor` | Failed as intended, exit 1 | Missing OpenAI key, Claude authentication and reviewed site adapters |
 | Live LinkedIn discovery | Five postings returned and stored | One bounded mechanical-design search in the SF Bay Area |
@@ -37,7 +38,7 @@ continuous-cycle behavior. These are local tests, not employer-site success clai
 
 | Requested criteria | Status and evidence |
 | --- | --- |
-| 1, 3, 4: install, full suite, lint | Passed locally on Windows/Python 3.12. Linux 3.11/3.12 CI is configured but not yet observed. |
+| 1, 3, 4: install, full suite, lint | Passed locally on Windows/Python 3.12 and in Linux CI on Python 3.11/3.12. |
 | 2: full environment doctor | Blocked by local credentials and configured site adapters. Discovery-only doctor passes. |
 | 5: valid discovery | Demonstrated with a small live LinkedIn sample and a read-only Workday API request. Not all supported boards validated. |
 | 6: reliable enrichment | Partial. Failure preservation/auth-wall tests pass; live extraction still has failures. |
