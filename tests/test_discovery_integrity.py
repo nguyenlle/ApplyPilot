@@ -163,3 +163,80 @@ def test_failing_smart_source_does_not_abort_other_source(tmp_path, monkeypatch,
     assert result["errors"] == 1
     assert result["total_new"] == 1
     conn.close()
+
+class HtmlElement:
+    def __init__(self, tag):
+        self.tag = tag
+
+    def get_attribute(self, name):
+        return self.tag.get(name)
+
+    def inner_text(self):
+        return self.tag.get_text("\n")
+
+    def evaluate(self, script):
+        if "tagName" in script:
+            return self.tag.name
+        return None
+
+
+class HtmlPage:
+    def __init__(self, html, url="https://www.linkedin.com/jobs/view/42"):
+        from bs4 import BeautifulSoup
+        self.soup = BeautifulSoup(html, "html.parser")
+        self.url = url
+
+    def query_selector_all(self, selector):
+        return [HtmlElement(tag) for tag in self.soup.select(selector)]
+
+    def query_selector(self, selector):
+        matches = self.query_selector_all(selector)
+        return matches[0] if matches else None
+
+
+def test_linkedin_description_and_onsite_application_are_extracted():
+    description = "Design and test mechanical systems with manufacturing partners. " * 12
+    page = HtmlPage('<div class="description__text"><div class="show-more-less-html__markup">'
+                    + description + '</div></div><button data-tracking-control-name="public_jobs_apply-link-onsite">Apply</button>')
+    assert detail.extract_description_deterministic(page) == description.strip()
+    assert detail.extract_apply_url_deterministic(page) == page.url
+
+
+def test_offsite_linkedin_signup_is_not_an_application_url():
+    page = HtmlPage('<a href="/signup/cold-join?trk=public_jobs_apply-link-offsite">Join now</a>'
+                    '<button data-testid="apply" data-modal="sign-in">Apply</button>')
+    assert detail.extract_apply_url_deterministic(page) is None
+
+
+def test_invalid_first_link_does_not_hide_valid_apply_link():
+    page = HtmlPage('<a class="apply" href="/login">Apply</a>'
+                    '<a class="apply" href="https://jobs.example.test/apply/42">Apply</a>')
+    assert detail.extract_apply_url_deterministic(page) == "https://jobs.example.test/apply/42"
+
+
+def test_enrichment_clears_old_signup_url_and_identity(tmp_path, monkeypatch):
+    conn = database.init_db(tmp_path / "jobs.db")
+    url = "https://www.linkedin.com/jobs/view/42"
+    signup = "https://www.linkedin.com/signup/cold-join?trk=apply"
+    conn.execute("INSERT INTO jobs(url,title,application_url,application_identity) VALUES (?,?,?,?)",
+                 (url, "Mechanical Engineer", signup, signup))
+    conn.commit()
+    monkeypatch.setattr(detail, "sync_playwright", MagicMock())
+    monkeypatch.setattr(detail, "scrape_detail_page", lambda *a: {
+        "full_description": "Design and test mechanical assemblies. " * 20,
+        "application_url": None, "status": "partial", "tier_used": 2,
+    })
+    detail.scrape_site_batch(conn, "fixture", [(url, "Mechanical Engineer")])
+    row = conn.execute("SELECT * FROM jobs").fetchone()
+    assert row["application_url"] is None and row["application_identity"] is None
+    assert len(row["full_description"]) > 200
+    conn.close()
+
+
+def test_current_greenhouse_description_and_same_page_apply_form():
+    description = "Mechanical design and thermal analysis requirements. " * 12
+    page = HtmlPage('<div class="job__description body">' + description + '</div>'
+                    '<button aria-label="Apply" type="button">Apply</button>'
+                    '<form id="application-form"></form>', "https://job-boards.greenhouse.io/employer/jobs/42")
+    assert detail.extract_description_deterministic(page) == description.strip()
+    assert detail.extract_apply_url_deterministic(page) == page.url

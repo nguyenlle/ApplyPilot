@@ -24,6 +24,7 @@ from playwright.sync_api import sync_playwright
 
 from applypilot.database import init_db
 from applypilot.eligibility import normalize_posting_date
+from applypilot.identity import normalize_url
 from applypilot.llm import get_client
 
 log = logging.getLogger(__name__)
@@ -281,6 +282,8 @@ def extract_from_json_ld(intel: dict) -> dict | None:
 # -- Tier 2: Deterministic pattern matching ----------------------------------
 
 APPLY_SELECTORS = [
+    'button[data-tracking-control-name="public_jobs_apply-link-onsite"]',
+    'button[aria-label="Apply"]',
     'a[href*="apply"]',
     'a[data-testid*="apply"]',
     'a[class*="apply"]',
@@ -297,6 +300,8 @@ APPLY_SELECTORS = [
 ]
 
 DESCRIPTION_SELECTORS = [
+    '.description__text .show-more-less-html__markup',
+    '.job__description',
     '#job-description',
     '#job_description',
     '#jobDescriptionText',
@@ -327,16 +332,23 @@ def extract_apply_url_deterministic(page) -> str | None:
     """Try known CSS patterns for apply buttons/links."""
     for sel in APPLY_SELECTORS:
         try:
-            el = page.query_selector(sel)
-            if el:
-                href = el.get_attribute("href")
-                if href and href != "#":
+            for el in page.query_selector_all(sel):
+                href = _application_url(el.get_attribute("href"), page.url)
+                if href:
                     return href
                 tag = el.evaluate("el => el.tagName.toLowerCase()")
                 if tag == "button":
+                    # LinkedIn offsite buttons open a sign-in modal; that modal
+                    # does not expose or establish an employer application URL.
+                    host = (urlsplit(page.url).hostname or "").lower()
+                    if host == "linkedin.com" or host.endswith(".linkedin.com"):
+                        if el.get_attribute("data-tracking-control-name") == "public_jobs_apply-link-onsite":
+                            return page.url
+                        continue
                     parent_href = el.evaluate("el => el.parentElement?.querySelector('a')?.href || null")
-                    if parent_href:
-                        return parent_href
+                    valid_parent = _application_url(parent_href, page.url)
+                    if valid_parent:
+                        return valid_parent
                     return page.url
         except Exception:
             log.debug("extract_apply_url_deterministic: optional operation failed; proceeding with fallback", exc_info=True)
@@ -347,8 +359,8 @@ def extract_apply_url_deterministic(page) -> str | None:
         for link in links:
             text = link.inner_text().strip().lower()
             if "apply" in text and len(text) < 50:
-                href = link.get_attribute("href")
-                if href and href != "#" and "javascript:" not in href:
+                href = _application_url(link.get_attribute("href"), page.url)
+                if href:
                     return href
     except Exception:
         log.debug("extract_apply_url_deterministic: optional operation failed; proceeding with fallback", exc_info=True)
@@ -506,8 +518,16 @@ def description_is_usable(text: str | None) -> bool:
 def _application_url(value, base_url: str) -> str | None:
     if not isinstance(value, str) or not value.strip() or value.lower() in {"none", "null", "nan"}:
         return None
+    value = value.strip()
+    if value.startswith("#"):
+        return None
     resolved = urljoin(base_url, value)
-    return resolved if urlsplit(resolved).scheme in {"http", "https"} else None
+    parts = urlsplit(resolved)
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        return None
+    if re.search(r"(?:^|/)(?:signup|sign-up|login|signin|sign-in|authwall|checkpoint)(?:/|$)", parts.path, re.IGNORECASE):
+        return None
+    return resolved
 
 
 # -- Description cleaning ---------------------------------------------------
@@ -621,7 +641,7 @@ def scrape_detail_page(page, url: str) -> dict:
         result["full_description"] = desc
         result["application_url"] = _application_url(apply, page.url)
         result["tier_used"] = 2
-        result["status"] = "ok" if apply else "partial"
+        result["status"] = "ok" if result["application_url"] else "partial"
         result["elapsed"] = time.time() - t0
         return result
 
@@ -707,16 +727,19 @@ def scrape_site_batch(
                     if not description_is_usable(incoming_description):
                         incoming_description = None
                     incoming_application = _application_url(result.get("application_url"), url)
+                    existing = conn.execute("SELECT application_url FROM jobs WHERE url = ?", (url,)).fetchone()
+                    final_application = incoming_application or _application_url(existing[0] if existing else None, url)
                     conn.execute(
                         "UPDATE jobs SET full_description = CASE "
                         "WHEN LENGTH(COALESCE(?, '')) >= LENGTH(COALESCE(full_description, '')) "
                         "AND ? IS NOT NULL THEN ? ELSE full_description END, "
-                        "application_url = COALESCE(?, application_url), "
+                        "application_url = ?, application_identity = ?, "
                         "date_posted = COALESCE(?, date_posted), valid_through = COALESCE(?, valid_through), "
                         "posted_raw = COALESCE(?, posted_raw), "
                         "detail_scraped_at = ?, detail_error = NULL WHERE url = ?",
                         (incoming_description, incoming_description, incoming_description,
-                         incoming_application, result.get("date_posted"), result.get("valid_through"),
+                         final_application, normalize_url(final_application) if final_application else None,
+                         result.get("date_posted"), result.get("valid_through"),
                          result.get("posted_raw"), now, url),
                     )
                 else:

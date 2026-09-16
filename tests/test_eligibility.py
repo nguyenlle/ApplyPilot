@@ -121,3 +121,19 @@ def test_negative_gate_prevents_paid_llm_call(monkeypatch, job):
     monkeypatch.setattr(scorer, "get_client", client)
     assert scorer.score_job("Candidate facts", job)["score"] == 1
     client.assert_not_called()
+
+@pytest.mark.parametrize("description", [
+    "This Role Is NOT For You If\nYou prefer desk work.\nYou require visa sponsorship to work here.\nNext steps\nApply.",
+    "**This Role Is NOT For You If** \n\n\n* You prefer desk work.\n* You require visa sponsorship to work here.\n\n**Next steps**",
+])
+def test_negative_eligibility_section_denies_sponsorship(cfg, job, description):
+    job["full_description"] = description
+    assert "sponsorship" in eligibility_reason(job, cfg)
+
+
+def test_negative_section_stops_before_later_sponsorship_guidance(cfg, job):
+    job["full_description"] = (
+        "This Role Is NOT For You If\nYou prefer desk work.\nBenefits\n"
+        "You require visa sponsorship? We can support you."
+    )
+    assert eligibility_reason(job, cfg) is None

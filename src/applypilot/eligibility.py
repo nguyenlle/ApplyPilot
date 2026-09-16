@@ -156,7 +156,19 @@ def eligibility_reason(job: dict, search_cfg: dict | None = None, profile: dict 
             r"\b(?:no (?:visa )?sponsorship|(?:cannot|will not|does not|do not|unable to|not able to) (?:(?:offer|provide|support) (?:visa )?sponsorship|sponsor)|without (?:current or future |future |visa )?sponsorship|sponsorship (?:is )?not (?:available|offered)|not eligible for (?:visa )?sponsorship)\b",
             description, re.IGNORECASE,
         )
-        if denied:
+        # A negative eligibility section can deny sponsorship without the
+        # literal phrase "no sponsorship". Keep the match within that section
+        # and stop at the next heading/paragraph rather than matching a later
+        # unrelated question about sponsorship.
+        negative_section = re.search(
+            r"(?:not for you if|not a fit if)\s*[:*]*\s*\n(?P<items>(?:\s*(?:[-*•]\s*)?you [^\n]+\n?){1,5})",
+            description, re.IGNORECASE,
+        )
+        section_denial = negative_section and re.search(
+            r"(?:^|\n)\s*(?:[-*•]\s*)?you (?:require|need) (?:visa )?sponsorship\b",
+            negative_section.group("items"), re.IGNORECASE,
+        )
+        if denied or section_denial:
             return "not_eligible: employer explicitly denies required sponsorship"
 
     now = datetime.now(UTC)
