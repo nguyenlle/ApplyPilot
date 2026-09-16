@@ -12,3 +12,5 @@ max_per_company: 2
 company_period_days: 7
 poll_interval_seconds: 60
 discovery_interval_seconds: 1800
+apply_max_steps: 40
+apply_max_output_tokens: 2000

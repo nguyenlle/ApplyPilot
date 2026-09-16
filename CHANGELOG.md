@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — reliability hardening fork
 
+- Replace Claude Code with a bounded OpenAI Responses tool loop over guarded Playwright MCP.
+- Stop immediately on exhausted API credit; preserve retry behavior for temporary rate limits.
+- Repair LinkedIn/modern Greenhouse description extraction and reject signup URLs as application targets.
+- Recognize explicit sponsorship exclusions in negative-requirements sections.
+- Add a reviewed Archer form preview with exact question mapping and blocked network writes.
+- Report verified totals from committed database outcomes, not the agent's claimed status.
 - Record upstream baseline and inspect upstream fixes before integration.
 - Add exact URL targeting, owned atomic claims, attempt ledger, conservative crash recovery,
   bounded delayed retries, daily/company budgets and terminal-state protection.
@@ -16,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserve dedicated browser sessions with exclusive locks and owned-process cleanup.
 - Add restricted live native-form submission gate; unsupported dynamic ATS sites remain unvalidated.
 - Add deterministic eligibility filters and structured scoring rejection reasons.
-- Add meaningful doctor failures, authenticated Claude checks, tests and automatic CI.
+- Add meaningful local doctor failures, provider/browser checks, tests and automatic CI.
 - Preserve AGPL-3.0 license and upstream history. No claim of production readiness or verified real submission.
 
 ## [0.2.0] - 2026-02-17

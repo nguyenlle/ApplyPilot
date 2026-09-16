@@ -1,8 +1,8 @@
 # ApplyPilot — reliability development fork
 
 ApplyPilot finds job postings, enriches descriptions, scores them against your
-profile, tailors a résumé, writes a cover letter, and uses Claude Code with
-Playwright MCP to operate application forms. SQLite tracks jobs and attempts.
+profile, tailors a résumé, writes a cover letter, and uses OpenAI Responses with
+guarded Playwright MCP tools to operate application forms. SQLite tracks jobs and attempts.
 
 This fork of [Pickle-Pixel/ApplyPilot](https://github.com/Pickle-Pixel/ApplyPilot)
 preserves the six-stage pipeline and upstream AGPL-3.0 license and history.
@@ -27,6 +27,9 @@ real employer compatibility, and no real employer submission has been verified.
 - Restricted browser tools and a native-form gate check identity, answers, consent,
   upload bytes and confirmation evidence before recording verified success.
 - Configurable thresholds, volume controls and status/failure reporting support bounded runs.
+- OpenAI now runs the browser tool loop directly; no Claude installation or login is required.
+- A specific Archer/Greenhouse preview adapter validates the observed form schema and
+  fills explicit known answers after blocking network. Live Archer submission is still disabled.
 
 Read [UPSTREAM_AUDIT.md](UPSTREAM_AUDIT.md) for reviewed issues, PRs and forks,
 [BASELINE.md](BASELINE.md) for original failures, and
@@ -71,11 +74,23 @@ applypilot status
 applypilot apply --dry-run --limit 3 --headless
 ```
 
-OpenAI is used for scoring and writing. Browser application execution separately
-requires authenticated Claude Code (`claude auth login`), Chrome, Node.js/npx,
-and a reviewed per-job `application_adapters.json`. The full `applypilot doctor`
+OpenAI is used for scoring, writing and browser automation. Set `APPLY_MODEL` to
+override the browser model independently. Browser execution requires Chrome,
+Node.js/npx and a reviewed live per-job `application_adapters.json`. The full `applypilot doctor`
 exits unsuccessfully until those requirements are met. It checks local readiness,
-not remote model access or ATS compatibility.
+not API credit, remote model access or ATS compatibility. Exhausted API credit is
+reported immediately instead of being retried as a temporary rate limit.
+
+The specific Archer form can be previewed before documents are ready:
+
+```powershell
+applypilot preview-form --url "EXACT_QUEUED_ARCHER_JOB_URL"
+```
+
+This command never uploads or submits. It reports missing documents and unresolved
+controls. The implementation follows OpenAI's documented
+[function-calling loop](https://developers.openai.com/api/docs/guides/function-calling);
+the application gate remains responsible for validation and confirmation.
 
 After a real site adapter and controlled submission are validated:
 

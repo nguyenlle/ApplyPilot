@@ -62,6 +62,16 @@ def configured_llm_provider() -> str | None:
     return None
 
 
+def apply_model() -> str:
+    """Browser engine is OpenAI; never inherit a Gemini/local-only model name."""
+    explicit = os.environ.get("APPLY_MODEL", "").strip()
+    if explicit:
+        return explicit
+    if configured_llm_provider() == "openai":
+        return os.environ.get("LLM_MODEL", "").strip() or "gpt-4o-mini"
+    return "gpt-4o-mini"
+
+
 def profile_safety_reasons(profile: dict | None = None) -> list[str]:
     """Find malformed/sample values without inventing missing personal facts.
 
@@ -305,7 +315,7 @@ def get_tier() -> int:
 
     Tier 1 (Discovery):            Python + pip
     Tier 2 (AI Scoring & Tailoring): + LLM API key
-    Tier 3 (Full Auto-Apply):       + Claude Code CLI + Chrome
+    Tier 3 (Full Auto-Apply):       + OpenAI key + Chrome + Node/npx
     """
     load_env()
 
@@ -313,14 +323,14 @@ def get_tier() -> int:
     if not has_llm:
         return 1
 
-    has_claude = resolve_claude() is not None
+    has_openai = bool(os.environ.get("OPENAI_API_KEY", "").strip())
     try:
         get_chrome_path()
         has_chrome = True
     except FileNotFoundError:
         has_chrome = False
 
-    if has_claude and has_chrome and shutil.which("node") and shutil.which("npx"):
+    if has_openai and has_chrome and shutil.which("node") and shutil.which("npx"):
         return 3
 
     return 2
@@ -344,8 +354,8 @@ def check_tier(required: int, feature: str) -> None:
     if required >= 2 and configured_llm_provider() is None:
         missing.append("LLM credentials — set OPENAI_API_KEY, GEMINI_API_KEY, or LLM_URL")
     if required >= 3:
-        if not resolve_claude():
-            missing.append("Claude Code CLI — install from [bold]https://claude.ai/code[/bold]")
+        if not os.environ.get("OPENAI_API_KEY", "").strip():
+            missing.append("OPENAI_API_KEY — configure privately for the OpenAI browser runner")
         if not shutil.which("node") or not shutil.which("npx"):
             missing.append("Node.js and npx — install Node.js and make both available on PATH")
         try:

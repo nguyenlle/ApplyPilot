@@ -13,7 +13,7 @@ from applypilot.policy import RuntimePolicy, load_policy
 
 RETRYABLE = {"transient_network", "rate_limited", "navigation_failed", "browser_crashed"}
 NEEDS_INPUT = {"auth_required", "account_creation_failed", "email_verification_required",
-               "captcha_blocked", "missing_profile_data", "artifact_invalid", "form_changed"}
+               "captcha_blocked", "missing_profile_data", "artifact_invalid", "form_changed", "provider_quota"}
 PERMANENT = {"expired", "duplicate", "not_eligible", "location_mismatch", "blocked_domain"}
 UNCERTAIN = {"submission_uncertain", "submitted_but_unverified"}
 
@@ -155,8 +155,8 @@ def select_jobs(target_url: str | None = None, min_score: int | None = None,
         raise
 
 
-def finish(job: dict, category: str, evidence: dict | None = None, duration_ms: int = 0) -> None:
-    """Commit only the current owner's result; uncertain submissions never retry."""
+def finish(job: dict, category: str, evidence: dict | None = None, duration_ms: int = 0) -> str:
+    """Commit the owner's result and return its persisted, evidence-validated status."""
     conn = get_connection()
     token = job.get("claim_token")
     if not token:
@@ -210,6 +210,7 @@ def finish(job: dict, category: str, evidence: dict | None = None, duration_ms: 
                      "retryability=?, evidence_json=?, verification_state=? WHERE attempt_id=? AND ended_at IS NULL",
                      (now, duration_ms, status, category, retry, payload, verification, token))
         conn.commit()
+        return status
     except Exception:
         conn.rollback()
         raise

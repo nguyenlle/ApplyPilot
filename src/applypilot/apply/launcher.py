@@ -1,11 +1,9 @@
-"""Claude/Playwright orchestration with owned attempts and isolated previews."""
+"""OpenAI/Playwright orchestration with owned attempts and isolated previews."""
 
 import json
 import logging
-import os
 import re
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -21,7 +19,6 @@ from applypilot.apply import prompt as prompt_mod
 from applypilot.apply import state
 from applypilot.apply.chrome import (
     BASE_CDP_PORT,
-    _kill_process_tree,
     cleanup_worker,
     kill_all_chrome,
     launch_chrome,
@@ -35,8 +32,6 @@ from applypilot.policy import load_policy
 
 logger = logging.getLogger(__name__)
 _stop_event = threading.Event()
-_claude_procs: dict[int, subprocess.Popen] = {}
-_claude_lock = threading.Lock()
 POLL_INTERVAL = 60
 ALLOWED_BROWSER_TOOLS = (
     "browser_navigate", "browser_snapshot", "browser_click", "browser_fill_form",
@@ -81,7 +76,7 @@ def reset_failed() -> int:
     return state.reset_retryable()
 
 
-def gen_prompt(target_url: str, min_score: int = 7, model: str = "haiku", worker_id: int = 0) -> Path | None:
+def gen_prompt(target_url: str, min_score: int = 7, model: str | None = None, worker_id: int = 0) -> Path | None:
     """Generate debugging instructions without acquiring or changing a job."""
     job = state.select_jobs(target_url, min_score, dry_run=True)
     if not job:
@@ -155,9 +150,9 @@ def inspect_confirmation(port: int, job: dict, result: dict, gate_evidence: dict
 
 
 def run_job(job: dict, port: int, worker_id: int = 0,
-            model: str = "haiku", dry_run: bool = False,
+            model: str | None = None, dry_run: bool = False,
             gate: SubmissionGate | None = None) -> tuple[str, int, dict]:
-    """Bound total subprocess time including stdout, never just process.wait()."""
+    """Run OpenAI's bounded tool loop; only independent evidence proves success."""
     start = time.monotonic()
     if dry_run:
         from applypilot.apply.dryrun import run_dry_run
@@ -172,62 +167,41 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         "urls": [gate.adapter.application_url],
         "file_sha256": list(gate.adapter.files.values()),
     }), encoding="utf-8")
-    mcp_path = worker_dir / "mcp.json"
-    mcp_path.write_text(json.dumps(_make_mcp_config(port, policy_path)), encoding="utf-8")
     text = Path(job["tailored_resume_path"]).with_suffix(".txt").read_text(encoding="utf-8")
     prompt = prompt_mod.build_prompt(job, text, worker_id=worker_id)
-    claude = config.resolve_claude()
-    if not claude:
-        return "auth_required", 0, {"reason": "Claude Code executable missing"}
-    cmd = [claude, "--model", model, "-p", "--mcp-config", str(mcp_path), "--strict-mcp-config",
-           "--permission-mode", "dontAsk", "--tools", "", "--allowedTools",
-           ",".join("mcp__playwright__" + name for name in ALLOWED_BROWSER_TOOLS),
-           "--disallowedTools", "mcp__playwright__browser_run_code,mcp__playwright__browser_evaluate",
-           "--no-session-persistence", "--output-format", "json"]
-    env = os.environ.copy()
-    for key in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "OPENAI_API_KEY", "GEMINI_API_KEY", "CAPSOLVER_API_KEY"):
-        env.pop(key, None)
-    proc = None
+    log_path = config.LOG_DIR / f"attempt-{job['claim_token']}.json"
+    policy = load_policy()
+    from applypilot.apply.openai_runner import RunnerError, run_agent
     try:
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, encoding="utf-8", errors="replace", cwd=str(worker_dir), env=env,
-                                start_new_session=os.name != "nt",
-                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-        with _claude_lock:
-            _claude_procs[worker_id] = proc
-        stdout, stderr = proc.communicate(prompt, timeout=load_policy().apply_timeout_seconds)
-        elapsed = int((time.monotonic() - start) * 1000)
-        log_path = config.LOG_DIR / f"attempt-{job['claim_token']}.json"
-        log_path.write_text(json.dumps({"stdout": stdout, "stderr": stderr, "exit_code": proc.returncode}), encoding="utf-8")
-        if proc.returncode:
-            return "submission_uncertain", elapsed, {"reason": "Agent failed after browser access", "log": str(log_path)}
-        try:
-            envelope = json.loads(stdout)
-            result = parse_result(envelope.get("result", ""))
-        except (json.JSONDecodeError, AttributeError):
-            result = parse_result(stdout)
+        run = run_agent(prompt, port, policy_path, model or config.apply_model(),
+                        policy.apply_timeout_seconds, policy.apply_max_steps,
+                        policy.apply_max_output_tokens, log_path, stop_event=_stop_event)
+        result = run.get("result", {})
+        # Reuse the strict result parser; unexpected model status never authorizes success.
+        result = parse_result("RESULT_JSON:" + json.dumps(result))
         status = result.get("status", "submission_uncertain")
+        elapsed = int((time.monotonic() - start) * 1000)
         if status in {"applied", "submission_verified"}:
             evidence = inspect_confirmation(port, job, result, gate.evidence())
-            evidence["log"] = str(log_path)
+            evidence.update(log=str(log_path), usage=run.get("usage", {}))
             return ("submission_verified" if evidence["browser_corroborated"] else "submission_uncertain"), elapsed, evidence
         if status == "needs_input":
             status = "missing_profile_data"
         gate_proof = gate.evidence()
         if gate_proof.get("submission_attempted"):
             status = "submission_uncertain"
-        return status, elapsed, {"agent_result": result, "gate": gate_proof, "log": str(log_path)}
-    except subprocess.TimeoutExpired:
-        return "submission_uncertain", int((time.monotonic() - start) * 1000), {"reason": "Agent deadline exceeded"}
-    finally:
-        if proc is not None and proc.poll() is None:
-            _kill_process_tree(proc.pid)
-        with _claude_lock:
-            _claude_procs.pop(worker_id, None)
+        return status, elapsed, {"agent_result": result, "gate": gate_proof,
+                                 "log": str(log_path), "usage": run.get("usage", {})}
+    except RunnerError as exc:
+        proof = gate.evidence()
+        category = "submission_uncertain" if proof.get("submission_attempted") else exc.category
+        return category, int((time.monotonic() - start) * 1000), {
+            "reason": str(exc), "gate": proof, "log": str(log_path),
+        }
 
 
 def worker_loop(worker_id: int = 0, limit: int = 1, target_url: str | None = None,
-                min_score: int = 7, headless: bool = False, model: str = "haiku",
+                min_score: int = 7, headless: bool = False, model: str | None = None,
                 dry_run: bool = False) -> tuple[int, int]:
     """Isolate failures and never automatically recycle uncertain submissions."""
     applied = failed = done = 0
@@ -273,9 +247,9 @@ def worker_loop(worker_id: int = 0, limit: int = 1, target_url: str | None = Non
                                     evidence_path=config.LOG_DIR / f"attempt-{job['claim_token']}-gate.json") as gate:
                     entered_agent = True
                     category, duration, evidence = run_job(job, BASE_CDP_PORT + worker_id, worker_id, model, gate=gate)
-                state.finish(job, category, evidence, duration)
-                applied += int(category == "submission_verified")
-                failed += int(category != "submission_verified")
+                persisted_status = state.finish(job, category, evidence, duration)
+                applied += int(persisted_status == "applied")
+                failed += int(persisted_status != "applied")
         except Exception as exc:
             logger.exception("Application attempt failed for worker %d", worker_id)
             if not dry_run:
@@ -296,7 +270,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1, target_url: str | None = Non
 
 
 def main(limit: int = 1, target_url: str | None = None, min_score: int = 7,
-         headless: bool = False, model: str = "haiku", dry_run: bool = False,
+         headless: bool = False, model: str | None = None, dry_run: bool = False,
          continuous: bool = False, poll_interval: int = 60, workers: int = 1) -> dict:
     """Bound total work across workers; zero-allocation workers never run forever."""
     global POLL_INTERVAL
@@ -319,10 +293,6 @@ def main(limit: int = 1, target_url: str | None = None, min_score: int = 7,
 
     def stop(signum, frame):
         _stop_event.set()
-        with _claude_lock:
-            for proc in _claude_procs.values():
-                if proc.poll() is None:
-                    _kill_process_tree(proc.pid)
 
     signal.signal(signal.SIGINT, stop)
     try:

@@ -30,8 +30,8 @@ SCORING CRITERIA:
 - 1-2: Poor match. Completely different field or experience level.
 
 IMPORTANT FACTORS:
-- Weight technical skills heavily (programming languages, frameworks, tools)
-- Consider transferable experience (automation, scripting, API work)
+- Weight technical skills relevant to this specific discipline and posting heavily.
+- Consider supported transferable engineering experience; do not assume software work is the target.
 - Factor in the candidate's project experience
 - Be realistic about experience level vs. job requirements (years of experience, seniority)
 

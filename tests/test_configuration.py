@@ -1,8 +1,6 @@
 import copy
 import json
-import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -69,9 +67,9 @@ def test_claude_override_wins(monkeypatch, tmp_path):
 
 
 def test_tier_three_requires_node_and_npx(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
     monkeypatch.setattr(config, "load_env", lambda: None)
     monkeypatch.setattr(config, "configured_llm_provider", lambda: "openai")
-    monkeypatch.setattr(config, "resolve_claude", lambda: "claude.exe")
     monkeypatch.setattr(config, "get_chrome_path", lambda: "chrome.exe")
     monkeypatch.setattr(config.shutil, "which", lambda name: "node.exe" if name == "node" else None)
     assert config.get_tier() == 2
@@ -79,38 +77,11 @@ def test_tier_three_requires_node_and_npx(monkeypatch):
     assert config.get_tier() == 3
 
 
-@pytest.mark.parametrize("payload,returncode,expected", [
-    ({"loggedIn": True, "email": "private@example.test"}, 0, True),
-    ({"loggedIn": False, "secret": "do-not-print"}, 1, False),
-    ({"loggedIn": "true"}, 0, False),
-    ({"loggedIn": True}, 1, False),
-])
-def test_auth_check_uses_boolean_status_and_redacts_output(monkeypatch, payload, returncode, expected):
-    def run(args, **kwargs):
-        assert args == ["claude.exe", "auth", "status", "--json"]
-        assert kwargs["timeout"] == 15
-        return SimpleNamespace(stdout=json.dumps(payload), returncode=returncode)
-    monkeypatch.setattr(diagnostics.subprocess, "run", run)
-    ok, detail = diagnostics.claude_auth_status("claude.exe")
-    assert ok is expected
-    assert "private@example.test" not in detail
-    assert "do-not-print" not in detail
-
-
-def test_auth_timeout_is_a_failed_sanitized_check(monkeypatch):
-    def timeout(*args, **kwargs):
-        raise subprocess.TimeoutExpired("secret-bearing-command", 15)
-    monkeypatch.setattr(diagnostics.subprocess, "run", timeout)
-    ok, detail = diagnostics.claude_auth_status("claude.exe")
-    assert not ok
-    assert "secret-bearing-command" not in detail
-
-
 @pytest.fixture
 def ready_local_setup(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "APP_DIR", tmp_path)
     (tmp_path / "application_adapters.json").write_text(
-        json.dumps({"adapters": [{"application_url": "https://jobs.example.test/apply"}]}),
+        json.dumps({"adapters": [{"kind": "native_html_v1", "application_url": "https://jobs.example.test/apply"}]}),
         encoding="utf-8",
     )
     profile_path = tmp_path / "profile.json"
@@ -123,35 +94,53 @@ def ready_local_setup(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "RESUME_PATH", resume_path)
     monkeypatch.setattr(config, "SEARCH_CONFIG_PATH", search_path)
     monkeypatch.setattr(config, "load_env", lambda: None)
-    monkeypatch.setattr(config, "resolve_claude", lambda: "claude.exe")
     monkeypatch.setattr(config, "get_chrome_path", lambda: "chrome.exe")
     monkeypatch.setattr(diagnostics, "_module_available", lambda _: True)
     monkeypatch.setattr(diagnostics, "_chromium_available", lambda: True)
-    monkeypatch.setattr(diagnostics, "claude_auth_status", lambda _: (True, "Authenticated."))
     monkeypatch.setattr(diagnostics.shutil, "which", lambda name: name)
     for name in ("LLM_URL", "GEMINI_API_KEY", "OPENAI_API_KEY"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-private-never-display")
 
 
-def test_doctor_missing_credentials_or_auth_fails(ready_local_setup, monkeypatch):
+def test_doctor_missing_credentials_fails(ready_local_setup, monkeypatch):
     assert diagnostics.run_diagnostics()["ok"]
     monkeypatch.delenv("OPENAI_API_KEY")
     assert not diagnostics.run_diagnostics()["ok"]
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-private-never-display")
-    monkeypatch.setattr(diagnostics, "claude_auth_status", lambda _: (False, "Not authenticated."))
-    assert not diagnostics.run_diagnostics()["ok"]
+    monkeypatch.setenv("GEMINI_API_KEY", "synthetic-gemini-key")
     assert diagnostics.run_diagnostics(required_tier=2)["ok"]
+    assert not diagnostics.run_diagnostics(required_tier=3)["ok"]
 
 
-def test_doctor_skipped_auth_does_not_declare_ready(ready_local_setup):
-    assert not diagnostics.run_diagnostics(check_auth=False)["ok"]
+def test_doctor_and_tier_do_not_require_claude(ready_local_setup, monkeypatch):
+    monkeypatch.setattr(config, "resolve_claude", lambda: pytest.fail("Claude must not be queried"))
+    assert diagnostics.run_diagnostics()["ok"]
+    assert config.get_tier() == 3
+
+
+def test_apply_model_uses_separate_override(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_URL", raising=False)
+    monkeypatch.delenv("APPLY_MODEL", raising=False)
+    monkeypatch.setenv("LLM_MODEL", "chosen-model")
+    assert config.apply_model() == "chosen-model"
+    monkeypatch.setenv("GEMINI_API_KEY", "synthetic-key")
+    assert config.apply_model() == "gpt-4o-mini"
+    monkeypatch.setenv("APPLY_MODEL", "browser-model")
+    assert config.apply_model() == "browser-model"
 
 
 def test_doctor_requires_adapter_only_for_live_tier(ready_local_setup):
     (config.APP_DIR / "application_adapters.json").unlink()
     assert not diagnostics.run_diagnostics()["ok"]
     assert diagnostics.run_diagnostics(required_tier=2)["ok"]
+
+
+def test_preview_adapter_does_not_unlock_live_submission(ready_local_setup):
+    (config.APP_DIR / "application_adapters.json").write_text(
+        json.dumps({"adapters": [{"kind": "archer_greenhouse_preview_v1"}]}), encoding="utf-8")
+    assert not diagnostics.run_diagnostics()["ok"]
 
 
 def test_doctor_does_not_reveal_keys_or_private_endpoint(ready_local_setup, monkeypatch):

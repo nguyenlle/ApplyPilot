@@ -1,10 +1,8 @@
 """Read-only setup diagnostics. Never print credentials or make paid API calls."""
 
 import importlib
-import json
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 from applypilot import config
@@ -39,28 +37,6 @@ def _chromium_available() -> bool:
         return False
 
 
-def claude_auth_status(executable: str | None = None) -> tuple[bool, str]:
-    """Check local Claude auth; return sanitized state, never CLI output."""
-    executable = executable or config.resolve_claude()
-    if not executable:
-        return False, "Claude CLI is missing; set CLAUDE_PATH or install it."
-    try:
-        result = subprocess.run(
-            [executable, "auth", "status", "--json"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=15, check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        data = json.loads(result.stdout)
-        if result.returncode == 0 and isinstance(data, dict) and data.get("loggedIn") is True:
-            return True, "Claude reports authenticated (local status only)."
-        return False, "Claude is not authenticated; run claude auth login interactively."
-    except subprocess.TimeoutExpired:
-        return False, "Claude authentication check timed out; run claude auth status."
-    except (OSError, ValueError):
-        return False, "Could not verify Claude authentication; run claude auth status."
-
-
 def _search_config_valid() -> bool:
     if not config.SEARCH_CONFIG_PATH.is_file():
         return False
@@ -81,12 +57,12 @@ def _search_config_valid() -> bool:
         return False
 
 
-def run_diagnostics(required_tier: int = 3, check_auth: bool = True) -> dict:
+def run_diagnostics(required_tier: int = 3) -> dict:
     """Return sanitized checks and readiness for discovery, AI, or full pipeline.
 
     This verifies local configuration and executable availability, not provider
     billing, model access, network reachability, or successful job submissions.
-    Skipping an authentication check never declares a full pipeline ready.
+    OpenAI key presence does not prove billing or remote API access.
     """
     if required_tier not in (1, 2, 3):
         raise ValueError("required_tier must be 1, 2, or 3")
@@ -131,14 +107,13 @@ def run_diagnostics(required_tier: int = 3, check_auth: bool = True) -> dict:
         f"{provider} is configured; remote credentials/model access have not been tested."
         if credential_ok else "Missing usable LLM configuration. For OpenAI set OPENAI_API_KEY privately.", 2)
 
-    claude = config.resolve_claude()
-    add("Claude CLI", bool(claude), "Executable found." if claude else
-        "Not found; install Claude or set CLAUDE_PATH to its executable.", 3)
-    if check_auth and claude:
-        authenticated, detail = claude_auth_status(claude)
-    else:
-        authenticated, detail = False, "Authentication not verified."
-    add("Claude authentication", authenticated, detail, 3)
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    browser_key_ok = bool(openai_key) and not (
+        openai_key.lower().startswith("your") or "placeholder" in openai_key.lower()
+        or openai_key.lower() in {"sk-...", "sk-xxx", "changeme", "test", "none"})
+    add("OpenAI browser runner", browser_key_ok,
+        "OpenAI key configured; API credit/model access is unverified. No Claude login required."
+        if browser_key_ok else "Set OPENAI_API_KEY privately for browser automation.", 3)
     try:
         config.get_chrome_path()
         chrome_ok = True
@@ -154,7 +129,9 @@ def run_diagnostics(required_tier: int = 3, check_auth: bool = True) -> dict:
     try:
         import json
         adapter_doc = json.loads(adapter_path.read_text(encoding="utf-8"))
-        adapters_ok = isinstance(adapter_doc.get("adapters"), list) and bool(adapter_doc["adapters"])
+        adapters_ok = isinstance(adapter_doc.get("adapters"), list) and any(
+            isinstance(item, dict) and item.get("kind") == "native_html_v1"
+            for item in adapter_doc["adapters"])
     except (OSError, ValueError, AttributeError):
         adapters_ok = False
     add("Live submission adapters", adapters_ok,
@@ -166,6 +143,6 @@ def run_diagnostics(required_tier: int = 3, check_auth: bool = True) -> dict:
         "required_tier": required_tier,
         "checks": checks,
         "guidance": [OPENAI_SETUP_GUIDANCE,
-                     "OpenAI powers scoring/tailoring here; browser submission still requires Claude authentication.",
+                     "OpenAI powers browser automation directly; APPLY_MODEL overrides its model. No Claude login required.",
                      "This check makes no paid API calls and does not prove external site compatibility."],
     }

@@ -24,6 +24,8 @@ class RuntimePolicy:
     apply_timeout_seconds: int = 600
     poll_interval_seconds: int = 60
     discovery_interval_seconds: int = 1800
+    apply_max_steps: int = 40
+    apply_max_output_tokens: int = 2000
 
     def __post_init__(self) -> None:
         for field in fields(self):

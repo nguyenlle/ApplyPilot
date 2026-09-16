@@ -10,6 +10,7 @@ LLM_MODEL env var overrides the model name for any provider.
 """
 
 import logging
+import math
 import os
 import time
 
@@ -69,6 +70,23 @@ _TIMEOUT = 120  # seconds
 # Base wait on first 429/503 (doubles each retry, caps at 60s).
 # Gemini free tier is 15 RPM = 4s minimum between requests; 10s gives headroom.
 _RATE_LIMIT_BASE_WAIT = 10
+
+
+class ProviderQuotaError(RuntimeError):
+    """Account credit/quota is exhausted; waiting cannot repair it."""
+
+
+def raise_if_quota_exhausted(response: httpx.Response) -> None:
+    """Classify provider billing errors without logging response bodies or secrets."""
+    if response.status_code != 429:
+        return
+    try:
+        error = response.json().get("error", {})
+        exhausted = {"insufficient_quota", "credit_balance_exhausted", "billing_hard_limit_reached"}
+        if isinstance(error, dict) and (error.get("type") in exhausted or error.get("code") in exhausted):
+            raise ProviderQuotaError("Provider quota or credit exhausted; fund the API project before retrying.")
+    except (ValueError, AttributeError):
+        return
 
 
 _GEMINI_COMPAT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -228,6 +246,7 @@ class LLMClient:
 
             except httpx.HTTPStatusError as exc:
                 resp = exc.response
+                raise_if_quota_exhausted(resp)
                 if resp.status_code in (429, 503) and attempt < _MAX_RETRIES - 1:
                     # Respect Retry-After header if provided (Gemini sends this).
                     retry_after = (
@@ -237,15 +256,16 @@ class LLMClient:
                     if retry_after:
                         try:
                             wait = float(retry_after)
+                            if not math.isfinite(wait) or wait < 0:
+                                raise ValueError("Invalid retry delay")
+                            wait = min(wait, 60)
                         except (ValueError, TypeError):
                             wait = _RATE_LIMIT_BASE_WAIT * (2 ** attempt)
                     else:
                         wait = min(_RATE_LIMIT_BASE_WAIT * (2 ** attempt), 60)
 
                     log.warning(
-                        "LLM rate limited (HTTP %s). Waiting %ds before retry %d/%d. "
-                        "Tip: Gemini free tier = 15 RPM. Consider a paid account "
-                        "or switching to a local model.",
+                        "LLM temporarily unavailable (HTTP %s). Waiting %ds before retry %d/%d.",
                         resp.status_code, wait, attempt + 1, _MAX_RETRIES,
                     )
                     time.sleep(wait)

@@ -142,7 +142,7 @@ def apply(
     limit: int | None = typer.Option(None, "--limit", "-l", help="Max applications to submit."),
     workers: int | None = typer.Option(None, "--workers", "-w", min=1, help="Number of parallel browser workers."),
     min_score: int | None = typer.Option(None, "--min-score", min=1, max=10, help="Minimum fit score for job selection."),
-    model: str = typer.Option("haiku", "--model", "-m", help="Claude model name."),
+    model: str | None = typer.Option(None, "--model", "-m", help="OpenAI browser model; defaults to APPLY_MODEL or LLM_MODEL."),
     continuous: bool = typer.Option(False, "--continuous", "-c", help="Run forever, polling for new jobs."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without submitting."),
     headless: bool = typer.Option(False, "--headless", help="Run browsers in headless mode."),
@@ -161,6 +161,8 @@ def apply(
     from applypilot.database import get_connection
     from applypilot.policy import load_policy
     policy = load_policy()
+    from applypilot.config import apply_model
+    model = model or apply_model()
     workers = workers if workers is not None else policy.workers
     min_score = min_score if min_score is not None else policy.min_score
     if limit is not None and limit < 1:
@@ -170,7 +172,7 @@ def apply(
     if url and workers != 1:
         raise typer.BadParameter("--url requires exactly one worker")
 
-    # --- Utility modes (no Chrome/Claude needed) ---
+    # --- Utility modes (no browser or model needed) ---
 
     if mark_applied:
         from applypilot.apply.launcher import mark_job
@@ -192,7 +194,7 @@ def apply(
 
     # --- Full apply mode ---
 
-    # Check 1: Tier 3 required (Claude Code CLI + Chrome)
+    # Check 1: OpenAI browser runtime and reviewed adapters required.
     if not dry_run and not gen:
         check_tier(3, "auto-apply")
         from applypilot.diagnostics import run_diagnostics
@@ -265,6 +267,28 @@ def apply(
 
 
 @app.command()
+def preview_form(url: str = typer.Option(..., "--url", help="Exact queued job URL.")) -> None:
+    """Validate a supported employer form without uploading or submitting."""
+    from applypilot.apply import archer, state
+    from applypilot.database import get_connection
+    _bootstrap()
+    conn = get_connection()
+    canonical = state.resolve_target(conn, url)
+    job = dict(conn.execute("SELECT * FROM jobs WHERE url=?", (canonical,)).fetchone())
+    if job.get("application_url") != archer.APPLICATION_URL:
+        raise typer.BadParameter("No reviewed employer preview adapter matches this job")
+    result = archer.preview(job)
+    console.print(f"Form preview: {result['status']}; submitted: {result['submitted']}")
+    console.print(f"Evidence: {result['evidence_path']}")
+    for item in result.get("missing_fields", []):
+        console.print(f"Required: {item.get('question') or item.get('field')}: {item.get('profile_path') or item.get('reason', '')}")
+    for item in result.get("unresolved_controls", []):
+        console.print(f"Unresolved control: {item['field']}: {item['reason']}")
+    if result["status"] != "preview_only":
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def watch(
     cycles: int = typer.Option(0, "--cycles", min=0, help="Zero repeats until Ctrl+C."),
     workers: int = typer.Option(1, "--workers", "-w", min=1),
@@ -316,7 +340,7 @@ def status() -> None:
     summary.add_row("With full description", str(stats["with_description"]))
     summary.add_row("Pending enrichment", str(stats["pending_detail"]))
     summary.add_row("Enrichment errors", str(stats["detail_errors"]))
-    summary.add_row("Scored by LLM", str(stats["scored"]))
+    summary.add_row("Scored or filtered", str(stats["scored"]))
     summary.add_row("Pending scoring", str(stats["unscored"]))
     summary.add_row("Tailored resumes", str(stats["tailored"]))
     summary.add_row("Pending tailoring (7+)", str(stats["untailored_eligible"]))

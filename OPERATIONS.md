@@ -22,7 +22,7 @@ Python 3.13 is not a tested full-discovery environment because JobSpy pins NumPy
 On Linux install Playwright system dependencies with `playwright install --with-deps chromium`.
 
 For this workspace, `. .\use-local.ps1` selects the existing venv, ignored state,
-browser runtime, and Claude executable path. It does not contain credentials.
+browser runtime and local executable paths. It does not contain credentials.
 For a new checkout, set `APPLYPILOT_DIR` before importing/running ApplyPilot, create
 that directory, and either run `applypilot init` or prepare the files below.
 
@@ -47,8 +47,11 @@ All private files belong under `APPLYPILOT_DIR` (this workspace uses `.private/s
   be resolved by the submission adapter before live work.
 - `.env`: `OPENAI_API_KEY` and optionally `LLM_MODEL` (default `gpt-4o-mini`).
   Gemini and OpenAI-compatible local endpoints remain supported. OpenAI powers
-  scoring/writing; the upstream browser mechanism separately requires Claude Code
-  authentication (`claude auth login`), Chrome, Node.js and npx.
+  scoring/writing and browser automation. The browser uses the OpenAI Responses API
+  directly and requires Chrome, Node.js and npx. No Claude installation/login is needed.
+  `APPLY_MODEL` overrides the browser model (otherwise the OpenAI `LLM_MODEL` or
+  `gpt-4o-mini`). `apply_max_steps` and `apply_max_output_tokens` in runtime.yaml bound
+  the tool loop and each response; `apply_timeout_seconds` bounds the entire attempt.
 - `application_adapters.json`: explicit reviewed native-form mappings. Unsupported
   ATS workflows are held for input; see the adapter contract in `apply/gate.py`.
 
@@ -64,7 +67,7 @@ sponsorship is required. A missing posted date does not prove a job is fresh.
 . .\use-local.ps1
 applypilot doctor --tier 1          # local discovery readiness
 applypilot doctor --tier 2          # also checks AI configuration
-applypilot doctor                   # full configuration + Claude auth; nonzero on failure
+applypilot doctor                   # full local configuration; nonzero on missing requirements
 applypilot run --dry-run            # pipeline plan, no AI call
 applypilot run discover enrich -w 4
 applypilot run score tailor cover pdf --min-score 7
@@ -95,13 +98,38 @@ bounds a soak test. `--apply-jobs` also runs a guarded application batch per cyc
 Application dry-run performs an unauthenticated HTML GET, captures the document,
 then fills exact known profile fields in a fresh browser with network, form
 submissions, workers, frames and popups blocked. It does not invoke an unrestricted
-Claude agent, create accounts, upload documents to a server, or update job/attempt
+AI agent, create accounts, upload documents to a server, or update job/attempt
 rows. Debug screenshots, captured HTML and evidence JSON are written privately.
 
 This is a captured single-page form integration check. It cannot validate login,
 dynamic JavaScript applications, file-upload endpoints, or complete multi-page
 Workday/Greenhouse/Lever/iCIMS/Ashby/SmartRecruiters flows. A passing preview is not
 evidence that a live application will succeed.
+
+`applypilot preview-form --url "EXACT_QUEUED_ARCHER_JOB_URL"` uses the reviewed
+Archer mechanical-design form adapter. It first loads the public page and observed
+static resources without candidate data, then blocks all browser network before
+filling known text and dropdown values. It verifies the complete field/label schema;
+unexpected questions fail closed. Optional unknown EEO/SMS answers remain blank.
+The report includes unresolved dynamic controls and missing job-specific documents.
+For the reviewed city widget, `archer-location-cache.json` can contain an observed
+public geocoder response. The preview replays it locally only when its query,
+city, state, country and exact option match the explicit profile. This enables
+testing the real dropdown without sending candidate fields to the geocoder.
+The preview never changes the job or attempt ledger and never uploads/submits.
+Archer's live submission transport and CAPTCHA behavior remain unqualified.
+
+Archer-specific answers belong in `profile.json` under `employer_answers.archer`:
+`base_salary_usd`, `relocate_san_jose`, `referred`, optional `referrer_name`, and
+optional `sms_consent`. Legal given/family names belong in `personal.first_name`
+and `personal.last_name`. Do not infer a name split or consent from the résumé.
+
+OpenAI model output remains untrusted. The runner forwards only allowlisted MCP
+functions, serializes actions, preserves function-call history, imposes deadlines
+and writes a private trace. Provider credentials never enter the MCP subprocess
+environment. Model success text cannot bypass independent gate/browser evidence.
+An exhausted credit/quota error needs billing correction; it is not automatically
+retried. No real model response can be validated until the API project has credit.
 
 ## Live submission boundary
 

@@ -278,31 +278,20 @@ def _setup_ai_features() -> None:
 # ---------------------------------------------------------------------------
 
 def _setup_auto_apply() -> None:
-    """Configure autonomous job application (requires Claude Code CLI)."""
+    """Configure autonomous job application with the OpenAI API."""
     console.print(Panel(
         "[bold]Step 5: Auto-Apply (optional)[/bold]\n"
         "ApplyPilot can autonomously fill and submit job applications\n"
-        "using Claude Code as the browser agent."
+        "using OpenAI with guarded Playwright browser tools."
     ))
 
     if not Confirm.ask("Enable autonomous job applications?", default=True):
         console.print("[dim]You can apply manually using the tailored resumes ApplyPilot generates.[/dim]")
         return
 
-    # Check for Claude Code CLI
-    from applypilot.config import resolve_claude
-
-    if resolve_claude():
-        console.print("[green]Claude Code CLI detected.[/green]")
-    else:
-        console.print(
-            "[yellow]Claude Code CLI not found on PATH.[/yellow]\n"
-            "Install it from: [bold]https://claude.ai/code[/bold]\n"
-            "Auto-apply won't work until Claude Code is installed."
-        )
-
     console.print(
-        "[dim]Live applications require Claude authentication and a reviewed site adapter. "
+        "[dim]Live applications require OPENAI_API_KEY, Chrome, Node.js/npx and a reviewed site adapter. "
+        "APPLY_MODEL selects the browser model. No separate Claude authentication is needed. "
         "CAPTCHA, login and email-verification gates pause the application for user input.[/dim]"
     )
 
@@ -343,7 +332,7 @@ def run_wizard() -> None:
     _setup_ai_features()
     console.print()
 
-    # Step 5: Auto-apply (Claude Code detection)
+    # Step 5: OpenAI browser requirements
     _setup_auto_apply()
     console.print()
 
@@ -367,7 +356,7 @@ def run_wizard() -> None:
     if tier == 1:
         unlock_hint = "\n[dim]To unlock Tier 2: configure an LLM API key (re-run [bold]applypilot init[/bold]).[/dim]"
     elif tier == 2:
-        unlock_hint = "\n[dim]To unlock Tier 3: install Claude Code CLI + Chrome.[/dim]"
+        unlock_hint = "\n[dim]To unlock Tier 3: configure OPENAI_API_KEY and install Chrome + Node.js/npx.[/dim]"
 
     console.print(
         Panel.fit(
