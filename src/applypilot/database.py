@@ -7,10 +7,11 @@ without migration ordering issues.
 
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from applypilot.config import DB_PATH
+from applypilot.identity import job_fingerprint, normalize_url
 
 # Thread-local connection storage — each thread gets its own connection
 # (required for SQLite thread safety with parallel workers)
@@ -136,6 +137,32 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
 
     # Run migrations for any columns added after initial schema
     ensure_columns(conn)
+    conn.execute("UPDATE jobs SET apply_status='submission_uncertain', "
+                 "verification_state='submitted_but_unverified' "
+                 "WHERE (apply_status='applied' OR applied_at IS NOT NULL) AND verification_state IS NULL")
+    conn.commit()
+
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS application_attempts (
+            attempt_id TEXT PRIMARY KEY, job_url TEXT NOT NULL,
+            company TEXT, title TEXT, worker_id TEXT, session_id TEXT,
+            started_at TEXT NOT NULL, ended_at TEXT, duration_ms INTEGER,
+            status TEXT NOT NULL, error_category TEXT, retryability TEXT,
+            dry_run INTEGER NOT NULL DEFAULT 0,
+            artifact_paths TEXT, evidence_json TEXT, verification_state TEXT
+        );
+        CREATE INDEX IF NOT EXISTS attempts_job ON application_attempts(job_url, started_at);
+        CREATE INDEX IF NOT EXISTS jobs_queue ON jobs(apply_status, next_retry_at, fit_score);
+        CREATE UNIQUE INDEX IF NOT EXISTS jobs_normalized_url ON jobs(normalized_url)
+            WHERE normalized_url IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS jobs_fingerprint ON jobs(dedup_key)
+            WHERE dedup_key IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS jobs_application_identity ON jobs(application_identity)
+            WHERE application_identity IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS job_aliases (
+            alias_url TEXT PRIMARY KEY, job_url TEXT NOT NULL, source TEXT
+        );
+    """)
 
     return conn
 
@@ -144,6 +171,24 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
 # This is the single source of truth. Adding a column here is all that's needed
 # for it to appear in both new databases and migrated ones.
 _ALL_COLUMNS: dict[str, str] = {
+    "date_posted": "TEXT",
+    "valid_through": "TEXT",
+    "posted_raw": "TEXT",
+    "salary_min": "REAL",
+    "salary_max": "REAL",
+    "salary_currency": "TEXT",
+    "salary_interval": "TEXT",
+    "work_mode": "TEXT",
+    "company": "TEXT",
+    "normalized_url": "TEXT",
+    "application_identity": "TEXT",
+    "dedup_key": "TEXT",
+    "claim_token": "TEXT",
+    "lease_expires_at": "TEXT",
+    "next_retry_at": "TEXT",
+    "error_category": "TEXT",
+    "verification_state": "TEXT",
+    "verification_evidence": "TEXT",
     # Discovery
     "url": "TEXT PRIMARY KEY",
     "title": "TEXT",
@@ -309,7 +354,7 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
 
     # Application stage
     stats["applied"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE applied_at IS NOT NULL"
+        "SELECT COUNT(*) FROM jobs WHERE verification_state = 'submitted_and_verified'"
     ).fetchone()[0]
 
     stats["apply_errors"] = conn.execute(
@@ -320,8 +365,23 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
         "SELECT COUNT(*) FROM jobs "
         "WHERE tailored_resume_path IS NOT NULL "
         "AND applied_at IS NULL "
-        "AND application_url IS NOT NULL"
+        "AND application_url IS NOT NULL "
+        "AND (apply_status IS NULL OR apply_status IN ('queued','retryable'))"
     ).fetchone()[0]
+
+    from applypilot.policy import load_policy
+
+    stats["application_states"] = dict(conn.execute(
+        "SELECT CASE WHEN apply_status IS NOT NULL THEN apply_status "
+        "WHEN NULLIF(tailored_resume_path, '') IS NOT NULL AND fit_score >= ? "
+        "THEN 'queued' ELSE 'preparation_pending' END AS state, COUNT(*) "
+        "FROM jobs GROUP BY state",
+        (load_policy().min_score,),
+    ).fetchall())
+    stats["failure_categories"] = dict(conn.execute(
+        "SELECT error_category, COUNT(*) FROM jobs WHERE error_category IS NOT NULL "
+        "GROUP BY error_category ORDER BY COUNT(*) DESC"
+    ).fetchall())
 
     return stats
 
@@ -339,20 +399,40 @@ def store_jobs(conn: sqlite3.Connection, jobs: list[dict],
     Returns:
         Tuple of (new_count, duplicate_count).
     """
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     new = 0
     existing = 0
 
     for job in jobs:
-        url = job.get("url")
-        if not url:
+        try:
+            url = normalize_url(job.get("url", ""))
+            apply_url = normalize_url(job["application_url"]) if job.get("application_url") else None
+        except ValueError:
+            continue
+        fingerprint = job_fingerprint(job)
+        duplicate = conn.execute(
+            "SELECT url FROM jobs WHERE url = ? OR normalized_url = ? "
+            "OR (? IS NOT NULL AND application_url = ?) "
+            "OR (? IS NOT NULL AND dedup_key = ?) LIMIT 1",
+            (url, url, apply_url, apply_url, fingerprint, fingerprint),
+        ).fetchone()
+        if duplicate:
+            conn.execute("INSERT OR IGNORE INTO job_aliases VALUES (?, ?, ?)",
+                         (url, duplicate["url"], site))
+            existing += 1
             continue
         try:
             conn.execute(
-                "INSERT INTO jobs (url, title, salary, description, location, site, strategy, discovered_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO jobs (url, title, salary, description, location, site, strategy, discovered_at, "
+                "company, normalized_url, dedup_key, application_url, full_description, detail_scraped_at, application_identity, "
+                "date_posted, valid_through, posted_raw, salary_min, salary_max, salary_currency, salary_interval, work_mode) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (url, job.get("title"), job.get("salary"), job.get("description"),
-                 job.get("location"), site, strategy, now),
+                 job.get("location"), site, strategy, now, job.get("company"), url, fingerprint,
+                 apply_url, job.get("full_description"), job.get("detail_scraped_at"), apply_url,
+                 job.get("date_posted"), job.get("valid_through"), job.get("posted_raw"),
+                 job.get("salary_min"), job.get("salary_max"), job.get("salary_currency"),
+                 job.get("salary_interval"), job.get("work_mode")),
             )
             new += 1
         except sqlite3.IntegrityError:
@@ -393,7 +473,8 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
         "tailored": "tailored_resume_path IS NOT NULL",
         "pending_apply": (
             "tailored_resume_path IS NOT NULL AND applied_at IS NULL "
-            "AND application_url IS NOT NULL"
+            "AND application_url IS NOT NULL "
+            "AND (apply_status IS NULL OR apply_status IN ('queued','retryable'))"
         ),
         "applied": "applied_at IS NOT NULL",
     }
@@ -406,7 +487,7 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
     elif "?" in where:
         params.append(7)  # default min_score
 
-    if min_score is not None and "fit_score" not in where and stage in ("scored", "tailored", "applied"):
+    if min_score is not None and stage in ("scored", "tailored", "applied"):
         where += " AND fit_score >= ?"
         params.append(min_score)
 

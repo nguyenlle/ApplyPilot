@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -27,6 +26,7 @@ log = logging.getLogger(__name__)
 
 # Valid pipeline stages (in execution order)
 VALID_STAGES = ("discover", "enrich", "score", "tailor", "cover", "pdf")
+STAGES_ARGUMENT = typer.Argument(None, help="Pipeline stages: discover, enrich, score, tailor, cover, pdf, all")
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ VALID_STAGES = ("discover", "enrich", "score", "tailor", "cover", "pdf")
 
 def _bootstrap() -> None:
     """Common setup: load env, create dirs, init DB."""
-    from applypilot.config import load_env, ensure_dirs
+    from applypilot.config import ensure_dirs, load_env
     from applypilot.database import init_db
 
     load_env()
@@ -75,15 +75,8 @@ def init() -> None:
 
 @app.command()
 def run(
-    stages: Optional[list[str]] = typer.Argument(
-        None,
-        help=(
-            "Pipeline stages to run. "
-            f"Valid: {', '.join(VALID_STAGES)}, all. "
-            "Defaults to 'all' if omitted."
-        ),
-    ),
-    min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for tailor/cover stages."),
+    stages: list[str] | None = STAGES_ARGUMENT,
+    min_score: int | None = typer.Option(None, "--min-score", min=1, max=10, help="Minimum fit score; defaults to runtime.yaml."),
     workers: int = typer.Option(1, "--workers", "-w", help="Parallel threads for discovery/enrichment stages."),
     stream: bool = typer.Option(False, "--stream", help="Run stages concurrently (streaming mode)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview stages without executing."),
@@ -102,6 +95,8 @@ def run(
     _bootstrap()
 
     from applypilot.pipeline import run_pipeline
+    from applypilot.policy import load_policy
+    min_score = min_score if min_score is not None else load_policy().min_score
 
     stage_list = stages if stages else ["all"]
 
@@ -116,7 +111,7 @@ def run(
 
     # Gate AI stages behind Tier 2
     llm_stages = {"score", "tailor", "cover"}
-    if any(s in stage_list for s in llm_stages) or "all" in stage_list:
+    if not dry_run and (any(s in stage_list for s in llm_stages) or "all" in stage_list):
         from applypilot.config import check_tier
         check_tier(2, "AI scoring/tailoring")
 
@@ -144,32 +139,43 @@ def run(
 
 @app.command()
 def apply(
-    limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max applications to submit."),
-    workers: int = typer.Option(1, "--workers", "-w", help="Number of parallel browser workers."),
-    min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for job selection."),
+    limit: int | None = typer.Option(None, "--limit", "-l", help="Max applications to submit."),
+    workers: int | None = typer.Option(None, "--workers", "-w", min=1, help="Number of parallel browser workers."),
+    min_score: int | None = typer.Option(None, "--min-score", min=1, max=10, help="Minimum fit score for job selection."),
     model: str = typer.Option("haiku", "--model", "-m", help="Claude model name."),
     continuous: bool = typer.Option(False, "--continuous", "-c", help="Run forever, polling for new jobs."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without submitting."),
     headless: bool = typer.Option(False, "--headless", help="Run browsers in headless mode."),
-    url: Optional[str] = typer.Option(None, "--url", help="Apply to a specific job URL."),
+    url: str | None = typer.Option(None, "--url", help="Apply to a specific job URL."),
     gen: bool = typer.Option(False, "--gen", help="Generate prompt file for manual debugging instead of running."),
-    mark_applied: Optional[str] = typer.Option(None, "--mark-applied", help="Manually mark a job URL as applied."),
-    mark_failed: Optional[str] = typer.Option(None, "--mark-failed", help="Manually mark a job URL as failed (provide URL)."),
-    fail_reason: Optional[str] = typer.Option(None, "--fail-reason", help="Reason for --mark-failed."),
+    mark_applied: str | None = typer.Option(None, "--mark-applied", help="Manually mark a job URL as applied."),
+    mark_failed: str | None = typer.Option(None, "--mark-failed", help="Manually mark a job URL as failed (provide URL)."),
+    fail_reason: str | None = typer.Option(None, "--fail-reason", help="Reason for --mark-failed."),
     reset_failed: bool = typer.Option(False, "--reset-failed", help="Reset all failed jobs for retry."),
 ) -> None:
     """Launch auto-apply to submit job applications."""
     _bootstrap()
 
-    from applypilot.config import check_tier, PROFILE_PATH as _profile_path
+    from applypilot.config import PROFILE_PATH as _profile_path
+    from applypilot.config import check_tier
     from applypilot.database import get_connection
+    from applypilot.policy import load_policy
+    policy = load_policy()
+    workers = workers if workers is not None else policy.workers
+    min_score = min_score if min_score is not None else policy.min_score
+    if limit is not None and limit < 1:
+        raise typer.BadParameter("--limit must be positive; use --continuous for continuous mode")
+    if continuous and dry_run:
+        raise typer.BadParameter("--dry-run requires a bounded batch")
+    if url and workers != 1:
+        raise typer.BadParameter("--url requires exactly one worker")
 
     # --- Utility modes (no Chrome/Claude needed) ---
 
     if mark_applied:
         from applypilot.apply.launcher import mark_job
         mark_job(mark_applied, "applied")
-        console.print(f"[green]Marked as applied:[/green] {mark_applied}")
+        console.print(f"[yellow]Recorded manual submission as unverified:[/yellow] {mark_applied}")
         return
 
     if mark_failed:
@@ -187,7 +193,12 @@ def apply(
     # --- Full apply mode ---
 
     # Check 1: Tier 3 required (Claude Code CLI + Chrome)
-    check_tier(3, "auto-apply")
+    if not dry_run and not gen:
+        check_tier(3, "auto-apply")
+        from applypilot.diagnostics import run_diagnostics
+        if not run_diagnostics()["ok"]:
+            console.print("[red]Full-pipeline checks failed. Run applypilot doctor.[/red]")
+            raise typer.Exit(code=1)
 
     # Check 2: Profile exists
     if not _profile_path.exists():
@@ -211,7 +222,7 @@ def apply(
             raise typer.Exit(code=1)
 
     if gen:
-        from applypilot.apply.launcher import gen_prompt, BASE_CDP_PORT
+        from applypilot.apply.launcher import gen_prompt
         target = url or ""
         if not target:
             console.print("[red]--gen requires --url to specify which job.[/red]")
@@ -220,19 +231,13 @@ def apply(
         if not prompt_file:
             console.print("[red]No matching job found for that URL.[/red]")
             raise typer.Exit(code=1)
-        mcp_path = _profile_path.parent / ".mcp-apply-0.json"
         console.print(f"[green]Wrote prompt to:[/green] {prompt_file}")
-        console.print(f"\n[bold]Run manually:[/bold]")
-        console.print(
-            f"  claude --model {model} -p "
-            f"--mcp-config {mcp_path} "
-            f"--permission-mode bypassPermissions < {prompt_file}"
-        )
+        console.print("Debugging artifact only. Use apply --dry-run for the isolated browser preview.")
         return
 
     from applypilot.apply.launcher import main as apply_main
 
-    effective_limit = limit if limit is not None else (0 if continuous else 1)
+    effective_limit = limit if limit is not None else (0 if continuous else policy.max_per_run)
 
     console.print("\n[bold blue]Launching Auto-Apply[/bold blue]")
     console.print(f"  Limit:    {'unlimited' if continuous else effective_limit}")
@@ -244,7 +249,7 @@ def apply(
         console.print(f"  Target:   {url}")
     console.print()
 
-    apply_main(
+    results = apply_main(
         limit=effective_limit,
         target_url=url,
         min_score=min_score,
@@ -253,7 +258,42 @@ def apply(
         dry_run=dry_run,
         continuous=continuous,
         workers=workers,
+        poll_interval=policy.poll_interval_seconds,
     )
+    if results["failed"]:
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def watch(
+    cycles: int = typer.Option(0, "--cycles", min=0, help="Zero repeats until Ctrl+C."),
+    workers: int = typer.Option(1, "--workers", "-w", min=1),
+    apply_jobs: bool = typer.Option(False, "--apply-jobs", help="Also consume qualified jobs through validated adapters."),
+) -> None:
+    """Repeat discovery and preparation; optionally submit through configured adapters."""
+    import time
+
+    from applypilot.config import check_tier
+    from applypilot.pipeline import run_pipeline
+    from applypilot.policy import load_policy
+    _bootstrap()
+    check_tier(3 if apply_jobs else 2, "continuous pipeline")
+    iteration = 0
+    try:
+        while cycles == 0 or iteration < cycles:
+            policy = load_policy()
+            result = run_pipeline(stages=["all"], min_score=policy.min_score, workers=workers)
+            if result.get("errors"):
+                console.print("[yellow]Pipeline cycle has errors; inspect logs. Queue state is retained.[/yellow]")
+            if apply_jobs:
+                from applypilot.apply.launcher import main as apply_main
+                apply_main(limit=policy.max_per_run, workers=policy.workers, min_score=policy.min_score,
+                           poll_interval=policy.poll_interval_seconds)
+            iteration += 1
+            if cycles == 0 or iteration < cycles:
+                time.sleep(policy.discovery_interval_seconds)
+    except KeyboardInterrupt:
+        console.print("Stopped continuous pipeline.")
 
 
 @app.command()
@@ -286,6 +326,14 @@ def status() -> None:
     summary.add_row("Apply errors", str(stats["apply_errors"]))
 
     console.print(summary)
+    for label, counts in (("Application states", stats["application_states"]),
+                          ("Failure categories", stats["failure_categories"])):
+        breakdown = Table(title=label)
+        breakdown.add_column("State / category")
+        breakdown.add_column("Count")
+        for name, count in counts.items():
+            breakdown.add_row(name, str(count))
+        console.print(breakdown)
 
     # Score distribution
     if stats["score_distribution"]:
@@ -333,124 +381,15 @@ def dashboard() -> None:
 
 
 @app.command()
-def doctor() -> None:
-    """Check your setup and diagnose missing requirements."""
-    import shutil
-    from applypilot.config import (
-        load_env, PROFILE_PATH, RESUME_PATH, RESUME_PDF_PATH,
-        SEARCH_CONFIG_PATH, ENV_PATH, get_chrome_path,
-    )
-
-    load_env()
-
-    ok_mark = "[green]OK[/green]"
-    fail_mark = "[red]MISSING[/red]"
-    warn_mark = "[yellow]WARN[/yellow]"
-
-    results: list[tuple[str, str, str]] = []  # (check, status, note)
-
-    # --- Tier 1 checks ---
-    # Profile
-    if PROFILE_PATH.exists():
-        results.append(("profile.json", ok_mark, str(PROFILE_PATH)))
-    else:
-        results.append(("profile.json", fail_mark, "Run 'applypilot init' to create"))
-
-    # Resume
-    if RESUME_PATH.exists():
-        results.append(("resume.txt", ok_mark, str(RESUME_PATH)))
-    elif RESUME_PDF_PATH.exists():
-        results.append(("resume.txt", warn_mark, "Only PDF found — plain-text needed for AI stages"))
-    else:
-        results.append(("resume.txt", fail_mark, "Run 'applypilot init' to add your resume"))
-
-    # Search config
-    if SEARCH_CONFIG_PATH.exists():
-        results.append(("searches.yaml", ok_mark, str(SEARCH_CONFIG_PATH)))
-    else:
-        results.append(("searches.yaml", warn_mark, "Will use example config — run 'applypilot init'"))
-
-    # jobspy (discovery dep installed separately)
-    try:
-        import jobspy  # noqa: F401
-        results.append(("python-jobspy", ok_mark, "Job board scraping available"))
-    except ImportError:
-        results.append(("python-jobspy", warn_mark,
-                        "pip install --no-deps python-jobspy && pip install pydantic tls-client requests markdownify regex"))
-
-    # --- Tier 2 checks ---
-    import os
-    has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
-    has_openai = bool(os.environ.get("OPENAI_API_KEY"))
-    has_local = bool(os.environ.get("LLM_URL"))
-    if has_gemini:
-        model = os.environ.get("LLM_MODEL", "gemini-2.0-flash")
-        results.append(("LLM API key", ok_mark, f"Gemini ({model})"))
-    elif has_openai:
-        model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
-        results.append(("LLM API key", ok_mark, f"OpenAI ({model})"))
-    elif has_local:
-        results.append(("LLM API key", ok_mark, f"Local: {os.environ.get('LLM_URL')}"))
-    else:
-        results.append(("LLM API key", fail_mark,
-                        "Set GEMINI_API_KEY in ~/.applypilot/.env (run 'applypilot init')"))
-
-    # --- Tier 3 checks ---
-    # Claude Code CLI
-    claude_bin = shutil.which("claude")
-    if claude_bin:
-        results.append(("Claude Code CLI", ok_mark, claude_bin))
-    else:
-        results.append(("Claude Code CLI", fail_mark,
-                        "Install from https://claude.ai/code (needed for auto-apply)"))
-
-    # Chrome
-    try:
-        chrome_path = get_chrome_path()
-        results.append(("Chrome/Chromium", ok_mark, chrome_path))
-    except FileNotFoundError:
-        results.append(("Chrome/Chromium", fail_mark,
-                        "Install Chrome or set CHROME_PATH env var (needed for auto-apply)"))
-
-    # Node.js / npx (for Playwright MCP)
-    npx_bin = shutil.which("npx")
-    if npx_bin:
-        results.append(("Node.js (npx)", ok_mark, npx_bin))
-    else:
-        results.append(("Node.js (npx)", fail_mark,
-                        "Install Node.js 18+ from nodejs.org (needed for auto-apply)"))
-
-    # CapSolver (optional)
-    capsolver = os.environ.get("CAPSOLVER_API_KEY")
-    if capsolver:
-        results.append(("CapSolver API key", ok_mark, "CAPTCHA solving enabled"))
-    else:
-        results.append(("CapSolver API key", "[dim]optional[/dim]",
-                        "Set CAPSOLVER_API_KEY in .env for CAPTCHA solving"))
-
-    # --- Render results ---
-    console.print()
-    console.print("[bold]ApplyPilot Doctor[/bold]\n")
-
-    col_w = max(len(r[0]) for r in results) + 2
-    for check, status, note in results:
-        pad = " " * (col_w - len(check))
-        console.print(f"  {check}{pad}{status}  [dim]{note}[/dim]")
-
-    console.print()
-
-    # Tier summary
-    from applypilot.config import get_tier, TIER_LABELS
-    tier = get_tier()
-    console.print(f"[bold]Current tier: Tier {tier} — {TIER_LABELS[tier]}[/bold]")
-
-    if tier == 1:
-        console.print("[dim]  → Tier 2 unlocks: scoring, tailoring, cover letters (needs LLM API key)[/dim]")
-        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
-    elif tier == 2:
-        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
-
-    console.print()
+def doctor(tier: int = typer.Option(3, "--tier", min=1, max=3)) -> None:
+    """Verify configuration and credentials; exit nonzero when required checks fail."""
+    from applypilot.diagnostics import run_diagnostics
+    report = run_diagnostics(required_tier=tier)
+    for check in report["checks"]:
+        label = "OK" if check["ok"] else ("MISSING" if check["required"] else "OPTIONAL")
+        console.print(f"{label:8} {check['name']}: {check['detail']}")
+    if not report["ok"]:
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

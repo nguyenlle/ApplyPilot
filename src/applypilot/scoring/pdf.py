@@ -4,10 +4,14 @@ Parses the structured text resume format, renders via an HTML/CSS template,
 and exports to PDF using headless Chromium via Playwright.
 """
 
+import json
 import logging
+import re
+from html import escape
 from pathlib import Path
 
-from applypilot.config import TAILORED_DIR
+from applypilot.artifacts import refresh_pdf_manifest
+from applypilot.config import COVER_LETTER_DIR, TAILORED_DIR
 
 log = logging.getLogger(__name__)
 
@@ -62,11 +66,7 @@ def parse_resume(text: str) -> dict:
         stripped = line.strip()
         # Detect section headers (all caps, no leading dash/bullet, longer than 3 chars)
         if (
-            stripped
-            and stripped == stripped.upper()
-            and not stripped.startswith("-")
-            and len(stripped) > 3
-            and not stripped.startswith("\u2022")
+            stripped in {"SUMMARY", "TECHNICAL SKILLS", "EXPERIENCE", "PROJECTS", "EDUCATION"}
         ):
             if current_section:
                 sections[current_section] = "\n".join(current_lines).strip()
@@ -122,7 +122,7 @@ def parse_entries(text: str) -> list[dict]:
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith("- ") or stripped.startswith("\u2022 "):
+        if stripped.startswith(("- ", "\u2022 ")):
             if current:
                 current["bullets"].append(stripped[2:].strip())
         elif current is None or (
@@ -157,6 +157,8 @@ def build_html(resume: dict) -> str:
     Returns:
         Complete HTML string ready for PDF rendering.
     """
+    resume = {key: ({k: escape(v) for k, v in value.items()} if key == "sections" else escape(value))
+              for key, value in resume.items()}
     sections = resume["sections"]
 
     # Skills
@@ -343,13 +345,18 @@ def render_pdf(html: str, output_path: str) -> None:
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page()
+        launch_options = {}
+        if not Path(p.chromium.executable_path).is_file():
+            from applypilot.config import get_chrome_path
+            launch_options["executable_path"] = get_chrome_path()
+        browser = p.chromium.launch(**launch_options)
+        page = browser.new_page(java_script_enabled=False)
+        page.route("**/*", lambda route: route.abort())
         page.set_content(html, wait_until="networkidle")
         page.pdf(
             path=output_path,
             format="Letter",
-            margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+            prefer_css_page_size=True,
             print_background=True,
         )
         browser.close()
@@ -373,6 +380,12 @@ def convert_to_pdf(
     """
     text_path = Path(text_path)
     text = text_path.read_text(encoding="utf-8")
+    if text.lstrip().lower().startswith("dear"):
+        if html_only:
+            out = Path(output_path or text_path.with_suffix(".html"))
+            out.write_text(_letter_html(text, ""), encoding="utf-8")
+            return out
+        return convert_letter_to_pdf(text_path, "", output_path)
     resume = parse_resume(text)
     html = build_html(resume)
 
@@ -386,55 +399,51 @@ def convert_to_pdf(
     out = output_path or text_path.with_suffix(".pdf")
     out = Path(out)
     render_pdf(html, str(out))
+    if out == text_path.with_suffix(".pdf"):
+        refresh_pdf_manifest(text_path)
     log.info("PDF generated: %s", out)
     return out
 
 
+def _letter_html(text: str, applicant_name: str) -> str:
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
+    body = "\n".join(f"<p>{escape(p).replace(chr(10), '<br>')}</p>" for p in paragraphs)
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    @page {{ size: letter; margin: 0.8in; }}
+    body {{ font-family: Arial, sans-serif; font-size: 11pt; line-height: 1.5; }}
+    p {{ margin: 0 0 1em; }}
+    </style></head><body><h2>{escape(applicant_name)}</h2>{body}</body></html>"""
+
+
+def convert_letter_to_pdf(text_path: Path, applicant_name: str = "",
+                          output_path: Path | None = None) -> Path:
+    text_path = Path(text_path)
+    output_path = Path(output_path or text_path.with_suffix(".pdf"))
+    render_pdf(_letter_html(text_path.read_text(encoding="utf-8"), applicant_name), str(output_path))
+    if output_path == text_path.with_suffix(".pdf"):
+        refresh_pdf_manifest(text_path)
+    return output_path
+
+
 def batch_convert(limit: int = 50) -> int:
-    """Convert .txt files in TAILORED_DIR that don't have corresponding PDFs.
-
-    Scans for .txt files (excluding _JOB.txt and _REPORT.json), checks if a
-    .pdf with the same stem already exists, and converts any that are missing.
-
-    Args:
-        limit: Maximum number of files to convert.
-
-    Returns:
-        Number of PDFs generated.
-    """
-    if not TAILORED_DIR.exists():
-        log.warning("Tailored directory does not exist: %s", TAILORED_DIR)
-        return 0
-
-    txt_files = sorted(TAILORED_DIR.glob("*.txt"))
-    # Exclude _JOB.txt and _CL.txt files from resume conversion
-    # (they get their own conversion calls)
-    candidates = [
-        f for f in txt_files
-        if not f.name.endswith("_JOB.txt")
-    ]
-
-    # Filter to those without a corresponding PDF
-    to_convert: list[Path] = []
-    for f in candidates:
-        pdf_path = f.with_suffix(".pdf")
-        if not pdf_path.exists():
-            to_convert.append(f)
-        if len(to_convert) >= limit:
-            break
-
-    if not to_convert:
-        log.info("All text files already have PDFs.")
-        return 0
-
-    log.info("Converting %d files to PDF...", len(to_convert))
+    """Retry PDFs for approved job documents in both artifact directories."""
     converted = 0
-    for f in to_convert:
-        try:
-            convert_to_pdf(f)
-            converted += 1
-        except Exception as e:
-            log.error("Failed to convert %s: %s", f.name, e)
-
-    log.info("Done: %d/%d PDFs generated in %s", converted, len(to_convert), TAILORED_DIR)
+    for directory in (TAILORED_DIR, COVER_LETTER_DIR):
+        for path in sorted(directory.glob("*.txt")):
+            if limit > 0 and converted >= limit:
+                return converted
+            manifest_path = path.with_suffix(".manifest.json")
+            if path.name.endswith("_JOB.txt") or not manifest_path.exists():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if not manifest.get("approved") or (path.with_suffix(".pdf").exists() and manifest.get("pdf_sha256")):
+                    continue
+                if manifest.get("kind") == "cover_letter":
+                    convert_letter_to_pdf(path)
+                else:
+                    convert_to_pdf(path)
+                converted += 1
+            except Exception:
+                log.exception('PDF conversion failed for %s', path.name)
     return converted

@@ -10,15 +10,14 @@ Generates a self-contained HTML dashboard with:
 
 from __future__ import annotations
 
-import os
 import webbrowser
 from html import escape
 from pathlib import Path
 
 from rich.console import Console
 
-from applypilot.config import APP_DIR, DB_PATH
-from applypilot.database import get_connection
+from applypilot.config import APP_DIR
+from applypilot.database import get_connection, get_stats
 
 console = Console()
 
@@ -35,6 +34,15 @@ def generate_dashboard(output_path: str | None = None) -> str:
     out = Path(output_path) if output_path else APP_DIR / "dashboard.html"
 
     conn = get_connection()
+    operational = get_stats(conn)
+    operations_html = "".join(
+        f"<li>{escape(str(name))}: {count}</li>"
+        for name, count in operational["application_states"].items()
+    )
+    failures_html = "".join(
+        f"<li>{escape(str(name))}: {count}</li>"
+        for name, count in operational["failure_categories"].items()
+    )
 
     # Stats
     total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
@@ -300,6 +308,8 @@ def generate_dashboard(output_path: str | None = None) -> str:
 </style>
 </head>
 <body>
+<section><h2>Application states</h2><ul>{operations_html}</ul>
+<h2>Failure categories</h2><ul>{failures_html}</ul></section>
 
 <h1>ApplyPilot Dashboard</h1>
 <p class="subtitle">{total} jobs &middot; {scored} scored &middot; {high_fit} strong matches (7+)</p>

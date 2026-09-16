@@ -16,15 +16,14 @@ import re
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
-from urllib.parse import urljoin
+from datetime import UTC, datetime
+from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
-from applypilot import config
-from applypilot.config import DB_PATH
-from applypilot.database import get_connection, init_db, ensure_columns
+from applypilot.database import init_db
+from applypilot.eligibility import normalize_posting_date
 from applypilot.llm import get_client
 
 log = logging.getLogger(__name__)
@@ -59,7 +58,7 @@ def resolve_url(raw_url: str, site: str) -> str | None:
     if not raw_url:
         return None
 
-    if raw_url.startswith("http://") or raw_url.startswith("https://"):
+    if raw_url.startswith(("http://", "https://")):
         return raw_url
 
     if site == "WelcomeToTheJungle":
@@ -90,7 +89,7 @@ def resolve_all_urls(conn: sqlite3.Connection) -> dict:
 
     for row in rows:
         url, site = row[0], row[1]
-        if url.startswith("http://") or url.startswith("https://"):
+        if url.startswith(("http://", "https://")):
             already_absolute += 1
             continue
 
@@ -141,7 +140,7 @@ def resolve_wttj_urls(conn: sqlite3.Connection) -> int:
             try:
                 algolia_data["response"] = json.loads(response.text())
             except Exception:
-                pass
+                log.debug("capture_algolia: optional operation failed; proceeding with fallback", exc_info=True)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -217,7 +216,7 @@ def collect_detail_intelligence(page) -> dict:
             data = json.loads(el.inner_text())
             intel["json_ld"].append(data)
         except Exception:
-            pass
+            log.debug("collect_detail_intelligence: optional operation failed; proceeding with fallback", exc_info=True)
 
     return intel
 
@@ -230,7 +229,8 @@ def extract_from_json_ld(intel: dict) -> dict | None:
 
     def find_job_posting(data):
         if isinstance(data, dict):
-            if data.get("@type") == "JobPosting":
+            types = data.get("@type", [])
+            if types == "JobPosting" or (isinstance(types, list) and "JobPosting" in types):
                 return data
             if "@graph" in data and isinstance(data["@graph"], list):
                 for item in data["@graph"]:
@@ -254,7 +254,7 @@ def extract_from_json_ld(intel: dict) -> dict | None:
             continue
 
         desc_clean = clean_description(desc)
-        if len(desc_clean) < 50:
+        if not description_is_usable(desc_clean):
             continue
 
         apply_url = None
@@ -270,6 +270,9 @@ def extract_from_json_ld(intel: dict) -> dict | None:
         return {
             "full_description": desc_clean,
             "application_url": apply_url,
+            "posted_raw": str(posting.get("datePosted") or "") or None,
+            "date_posted": normalize_posting_date(posting.get("datePosted")),
+            "valid_through": normalize_posting_date(posting.get("validThrough")),
         }
 
     return None
@@ -336,6 +339,7 @@ def extract_apply_url_deterministic(page) -> str | None:
                         return parent_href
                     return page.url
         except Exception:
+            log.debug("extract_apply_url_deterministic: optional operation failed; proceeding with fallback", exc_info=True)
             continue
 
     try:
@@ -347,7 +351,7 @@ def extract_apply_url_deterministic(page) -> str | None:
                 if href and href != "#" and "javascript:" not in href:
                     return href
     except Exception:
-        pass
+        log.debug("extract_apply_url_deterministic: optional operation failed; proceeding with fallback", exc_info=True)
 
     return None
 
@@ -362,6 +366,7 @@ def extract_description_deterministic(page) -> str | None:
                 if len(text) >= 100:
                     return clean_description(text)
         except Exception:
+            log.debug("extract_description_deterministic: optional operation failed; proceeding with fallback", exc_info=True)
             continue
 
     return None
@@ -404,6 +409,7 @@ def extract_main_content(page) -> str:
                     if len(html) < 50000:
                         return clean_content_html(html)
         except Exception:
+            log.debug("extract_main_content: optional operation failed; proceeding with fallback", exc_info=True)
             continue
 
     try:
@@ -416,6 +422,7 @@ def extract_main_content(page) -> str:
         """)
         return clean_content_html(html[:50000])
     except Exception:
+        log.debug("extract_main_content: optional operation failed; proceeding with fallback", exc_info=True)
         return ""
 
 
@@ -437,7 +444,7 @@ def clean_content_html(html: str) -> str:
                         new_attrs["class"] = " ".join(kept[:3])
                 else:
                     new_attrs[attr] = val
-            elif attr.startswith("data-") or attr.startswith("aria-"):
+            elif attr.startswith(("data-", "aria-")):
                 new_attrs[attr] = val
         tag.attrs = new_attrs
 
@@ -454,7 +461,7 @@ def extract_with_llm(page, url: str) -> dict:
     try:
         title = page.title()
     except Exception:
-        pass
+        log.debug("extract_with_llm: optional operation failed; proceeding with fallback", exc_info=True)
 
     prompt = DETAIL_EXTRACT_PROMPT.format(
         url=url,
@@ -474,24 +481,46 @@ def extract_with_llm(page, url: str) -> dict:
         desc = result.get("full_description")
         apply_url = result.get("application_url")
 
-        if desc:
+        if isinstance(desc, str):
             desc = clean_description(desc)
+        if not description_is_usable(desc):
+            desc = None
 
         return {"full_description": desc, "application_url": apply_url}
-    except Exception as e:
-        log.error("LLM ERROR: %s", e)
+    except Exception:
+        log.exception('LLM ERROR')
         return {"full_description": None, "application_url": None}
+
+
+def description_is_usable(text: str | None) -> bool:
+    if not isinstance(text, str) or len(text.strip()) < 200:
+        return False
+    low = text.lower()
+    return not any(marker in low for marker in (
+        "verify you are human", "access denied", "enable javascript and cookies",
+        "checking your browser", "unusual traffic from your computer",
+        "sign in to view this job", "join linkedin to view", "security verification",
+    ))
+
+
+def _application_url(value, base_url: str) -> str | None:
+    if not isinstance(value, str) or not value.strip() or value.lower() in {"none", "null", "nan"}:
+        return None
+    resolved = urljoin(base_url, value)
+    return resolved if urlsplit(resolved).scheme in {"http", "https"} else None
 
 
 # -- Description cleaning ---------------------------------------------------
 
 def clean_description(text: str) -> str:
     """Convert HTML description to clean readable text."""
-    if not text:
+    if not isinstance(text, str):
         return ""
 
     if "<" in text and ">" in text:
         soup = BeautifulSoup(text, "html.parser")
+        for unwanted in soup.select("script, style, noscript"):
+            unwanted.decompose()
         for br in soup.find_all("br"):
             br.replace_with("\n")
         for tag in soup.find_all(["p", "div", "h1", "h2", "h3", "h4", "li", "tr"]):
@@ -541,7 +570,7 @@ def scrape_detail_page(page, url: str) -> dict:
 
     try:
         resp = page.goto(url, timeout=45000)
-        if resp and resp.status in PERMANENT_FAILURES:
+        if resp and resp.status >= 400:
             result["error"] = f"HTTP {resp.status}"
             result["elapsed"] = time.time() - t0
             return result
@@ -549,8 +578,9 @@ def scrape_detail_page(page, url: str) -> dict:
         try:
             page.wait_for_load_state("networkidle", timeout=10000)
         except Exception:
-            pass
+            log.debug("scrape_detail_page: optional operation failed; proceeding with fallback", exc_info=True)
     except Exception as e:
+        log.debug("scrape_detail_page: optional operation failed; proceeding with fallback", exc_info=True)
         err_str = str(e)
         if "timeout" in err_str.lower():
             result["error"] = "timeout"
@@ -559,6 +589,14 @@ def scrape_detail_page(page, url: str) -> dict:
         result["elapsed"] = time.time() - t0
         return result
 
+    # Authentication/challenge redirects are not job descriptions.
+    title = page.title()
+    final_path = urlsplit(page.url).path.lower()
+    if (re.search(r"(?:^|/)(?:login|signin|sign-in|authwall|checkpoint)(?:/|$)", final_path)
+            or re.search(r"^(?:sign in|log in|login|access denied|security check|captcha)\b", title, re.IGNORECASE)):
+        result["error"] = "blocked_or_login_page"
+        result["elapsed"] = time.time() - t0
+        return result
     intel = collect_detail_intelligence(page)
 
     # Tier 1: JSON-LD
@@ -570,6 +608,7 @@ def scrape_detail_page(page, url: str) -> dict:
             apply = extract_apply_url_deterministic(page)
             if apply:
                 result["application_url"] = apply
+        result["application_url"] = _application_url(result.get("application_url"), page.url)
         result["status"] = "ok" if result.get("application_url") else "partial"
         result["elapsed"] = time.time() - t0
         return result
@@ -578,9 +617,9 @@ def scrape_detail_page(page, url: str) -> dict:
     desc = extract_description_deterministic(page)
     apply = extract_apply_url_deterministic(page)
 
-    if desc:
+    if description_is_usable(desc):
         result["full_description"] = desc
-        result["application_url"] = apply
+        result["application_url"] = _application_url(apply, page.url)
         result["tier_used"] = 2
         result["status"] = "ok" if apply else "partial"
         result["elapsed"] = time.time() - t0
@@ -591,10 +630,11 @@ def scrape_detail_page(page, url: str) -> dict:
     # Tier 3: LLM
     llm_result = extract_with_llm(page, url)
     result["full_description"] = llm_result.get("full_description")
-    result["application_url"] = llm_result.get("application_url") or tier2_apply
+    result["application_url"] = _application_url(llm_result.get("application_url") or tier2_apply, page.url)
     result["tier_used"] = 3
 
     if result.get("full_description"):
+        result["application_url"] = _application_url(result.get("application_url"), page.url)
         result["status"] = "ok" if result.get("application_url") else "partial"
     elif result.get("application_url"):
         result["status"] = "partial"
@@ -629,7 +669,7 @@ def scrape_site_batch(
     if own_conn:
         conn = init_db()
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     try:
         with sync_playwright() as p:
@@ -663,10 +703,21 @@ def scrape_site_batch(
 
                 if status in ("ok", "partial"):
                     stats[status] += 1
+                    incoming_description = result.get("full_description")
+                    if not description_is_usable(incoming_description):
+                        incoming_description = None
+                    incoming_application = _application_url(result.get("application_url"), url)
                     conn.execute(
-                        "UPDATE jobs SET full_description = ?, application_url = ?, "
+                        "UPDATE jobs SET full_description = CASE "
+                        "WHEN LENGTH(COALESCE(?, '')) >= LENGTH(COALESCE(full_description, '')) "
+                        "AND ? IS NOT NULL THEN ? ELSE full_description END, "
+                        "application_url = COALESCE(?, application_url), "
+                        "date_posted = COALESCE(?, date_posted), valid_through = COALESCE(?, valid_through), "
+                        "posted_raw = COALESCE(?, posted_raw), "
                         "detail_scraped_at = ?, detail_error = NULL WHERE url = ?",
-                        (result.get("full_description"), result.get("application_url"), now, url),
+                        (incoming_description, incoming_description, incoming_description,
+                         incoming_application, result.get("date_posted"), result.get("valid_through"),
+                         result.get("posted_raw"), now, url),
                     )
                 else:
                     stats["error"] += 1
@@ -837,8 +888,8 @@ def stream_detail(
                         total_err += stats["error"]
                         log.info("%s: %d ok, %d partial, %d error",
                                  site, stats['ok'], stats['partial'], stats['error'])
-                    except Exception as e:
-                        log.error("%s: CRASHED: %s", site, e)
+                    except Exception:
+                        log.exception('%s: CRASHED', site)
 
             upstream_finished = upstream_done is None or upstream_done.is_set()
             if upstream_finished and not rows:

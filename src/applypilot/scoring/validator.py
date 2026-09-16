@@ -11,8 +11,9 @@ normal  -- banned words = warnings only; fabrication/structure = errors (default
 lenient -- banned words ignored; only fabrication and required structure checked
 """
 
-import re
+import json
 import logging
+import re
 
 log = logging.getLogger(__name__)
 
@@ -78,9 +79,7 @@ def _build_skills_set(profile: dict) -> set[str]:
     boundary = profile.get("skills_boundary", {})
     allowed: set[str] = set()
     for category in boundary.values():
-        if isinstance(category, list):
-            allowed.update(s.lower().strip() for s in category)
-        elif isinstance(category, set):
+        if isinstance(category, (list, set)):
             allowed.update(s.lower().strip() for s in category)
     return allowed
 
@@ -96,90 +95,93 @@ def sanitize_text(text: str) -> str:
 
 # ── JSON Field Validation ─────────────────────────────────────────────────
 
-def validate_json_fields(data: dict, profile: dict, mode: str = "normal") -> dict:
-    """Validate individual JSON fields from an LLM-generated tailored resume.
-
-    Args:
-        data:    Parsed JSON from the LLM (title, summary, skills, experience, projects, education).
-        profile: User profile dict from load_profile().
-        mode:    Validation strictness — "strict", "normal", or "lenient".
-                 strict  → banned words are errors (trigger retries)
-                 normal  → banned words are warnings (no retry)
-                 lenient → banned words ignored entirely
-
-    Returns:
-        {"passed": bool, "errors": list[str], "warnings": list[str]}
-    """
+def validate_json_fields(data: dict, profile: dict, mode: str = "normal",
+                         original_text: str = "") -> dict:
+    """Reject malformed output, unsupported skills and changed immutable facts."""
     errors: list[str] = []
     warnings: list[str] = []
-
-    # Required keys — always checked regardless of mode
-    for key in ("title", "summary", "skills", "experience", "projects", "education"):
-        if key not in data or not data[key]:
-            errors.append(f"Missing required field: {key}")
+    if not isinstance(data, dict):
+        return {"passed": False, "errors": ["Resume must be a JSON object"], "warnings": []}
+    for key in ("title", "summary", "education"):
+        if not isinstance(data.get(key), str) or not data[key].strip():
+            errors.append(f"Missing or invalid string: {key}")
+    if not isinstance(data.get("skills"), dict) or not data["skills"]:
+        errors.append("Skills must be a nonempty object")
+    for key in ("experience", "projects"):
+        if not isinstance(data.get(key), list):
+            errors.append(f"{key} must be a list")
+            continue
+        for entry in data[key]:
+            if not isinstance(entry, dict) or not isinstance(entry.get("header"), str):
+                errors.append(f"Invalid {key} entry")
+                continue
+            if not isinstance(entry.get("subtitle", ""), str):
+                errors.append(f"Invalid {key} subtitle")
+            if not isinstance(entry.get("bullets"), list) or not all(
+                isinstance(b, str) and b.strip() for b in entry.get("bullets", [])
+            ):
+                errors.append(f"Invalid {key} bullets")
     if errors:
         return {"passed": False, "errors": errors, "warnings": warnings}
 
-    # Collect all text for bulk checks
-    all_text_parts: list[str] = [data["summary"]]
+    allowed = _build_skills_set(profile)
+    for values in data["skills"].values():
+        if isinstance(values, str):
+            values = [v.strip() for v in re.split(r"[,;|]", values) if v.strip()]
+        if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+            errors.append("Skills must contain strings or lists of strings")
+            continue
+        for skill in values:
+            if skill.lower().strip() not in allowed:
+                errors.append(f"Unsupported skill: {skill}")
 
-    # Skills: check for fabrication (always enforced)
-    if isinstance(data["skills"], dict):
-        skills_text = " ".join(str(v) for v in data["skills"].values()).lower()
-        for fake in FABRICATION_WATCHLIST:
-            if len(fake) <= 2:
-                continue
-            if fake in skills_text:
-                errors.append(f"Fabricated skill: '{fake}'")
+    facts = profile.get("resume_facts", {})
+    for company in facts.get("preserved_companies", []):
+        if not any(company.lower() in (e["header"] + " " + e.get("subtitle", "")).lower()
+                   for e in data["experience"]):
+            errors.append(f"Company '{company}' missing from experience")
+    school = facts.get("preserved_school", "")
+    if school and school.lower() not in data["education"].lower():
+        errors.append(f"Education '{school}' missing")
+    canonical = facts.get("experience")
+    if canonical:
+        expected = sorted((sanitize_text(e["header"]), sanitize_text(e.get("subtitle", ""))) for e in canonical)
+        actual = sorted((sanitize_text(e["header"]), sanitize_text(e.get("subtitle", ""))) for e in data["experience"])
+        if actual != expected:
+            errors.append("Experience titles, employers or dates changed from immutable facts")
+    if facts.get("education") and sanitize_text(data["education"]) != sanitize_text(facts["education"]):
+        errors.append("Education changed from immutable facts")
 
-    # Experience: preserved companies must be present (always enforced)
-    resume_facts = profile.get("resume_facts", {})
-    preserved_companies = resume_facts.get("preserved_companies", [])
-
-    if isinstance(data["experience"], list):
-        for company in preserved_companies:
-            has_company = any(
-                company.lower() in str(e.get("header", "")).lower()
-                for e in data["experience"]
-            )
-            if not has_company:
-                errors.append(f"Company '{company}' missing from experience")
-        for entry in data["experience"]:
-            for b in entry.get("bullets", []):
-                all_text_parts.append(b)
-
-    # Projects: collect bullets
-    if isinstance(data["projects"], list):
-        for entry in data["projects"]:
-            for b in entry.get("bullets", []):
-                all_text_parts.append(b)
-
-    # Education: preserved school must be present (always enforced)
-    preserved_school = resume_facts.get("preserved_school", "")
-    if preserved_school:
-        edu = str(data.get("education", ""))
-        if preserved_school.lower() not in edu.lower():
-            errors.append(f"Education '{preserved_school}' missing")
-
-    # Bulk text checks
-    all_text = " ".join(all_text_parts).lower()
-
-    # LLM self-talk is always an error regardless of mode (indicates broken output)
-    found_leaks = [p for p in LLM_LEAK_PHRASES if p in all_text]
-    if found_leaks:
-        errors.append(f"LLM self-talk: '{found_leaks[0]}'")
-
-    # Banned filler words — severity depends on mode
+    all_text = json.dumps(data, ensure_ascii=False)
+    if original_text:
+        errors.extend(validate_numeric_claims(all_text, original_text, profile))
+    low = all_text.lower()
+    leaks = [p for p in LLM_LEAK_PHRASES if p in low]
+    if leaks:
+        errors.append(f"LLM self-talk: '{leaks[0]}'")
     if mode != "lenient":
-        found_banned = [w for w in BANNED_WORDS if re.search(r"\b" + re.escape(w) + r"\b", all_text)]
-        if found_banned:
-            msg = f"Banned words: {', '.join(found_banned[:5])}"
-            if mode == "strict":
-                errors.append(msg)
-            else:  # normal
-                warnings.append(msg)
+        banned = [w for w in BANNED_WORDS if re.search(r"\b" + re.escape(w) + r"\b", low)]
+        if banned:
+            (errors if mode == "strict" else warnings).append(f"Banned words: {', '.join(banned[:5])}")
+    return {"passed": not errors, "errors": errors, "warnings": warnings}
 
-    return {"passed": len(errors) == 0, "errors": errors, "warnings": warnings}
+
+def validate_numeric_claims(text: str, original_text: str, profile: dict) -> list[str]:
+    """Conservative numeric guard; semantic truth still requires the fact judge."""
+    # Profile supplies exact dates, contact details and metrics, never the job posting.
+    evidence = original_text + " " + json.dumps(profile.get("resume_facts", {}))
+    evidence += " " + json.dumps(profile.get("personal", {}))
+    pattern = r"(?<![\w])\d+(?:[,.]\d+)*(?:%|\+)?"
+    allowed = set(re.findall(pattern, evidence))
+    unsupported = sorted(set(re.findall(pattern, text)) - allowed)
+    return [f"Unsupported numeric claim: {value}" for value in unsupported]
+
+
+def find_watchlist_hits(text: str, allowed: set[str]) -> list[str]:
+    """Legacy helper: profile-aware matching without substring false positives."""
+    return [term for term in FABRICATION_WATCHLIST if term not in allowed and
+            re.search(r"(?<![\w+#])" + re.escape(term) +
+                      (r"\w*" if term == "certif" else r"(?![\w+#])"), text.lower())]
 
 
 # ── Full Resume Text Validation ───────────────────────────────────────────
@@ -247,10 +249,8 @@ def validate_tailored_resume(text: str, profile: dict, original_text: str = "") 
     skills_end = text_lower.find("experience", skills_start) if skills_start != -1 else -1
     if skills_start != -1 and skills_end != -1:
         skills_block = text_lower[skills_start:skills_end]
-        for fake in FABRICATION_WATCHLIST:
-            if len(fake) <= 2:
-                continue
-            if fake in skills_block:
+        for fake in find_watchlist_hits(skills_block, _build_skills_set(profile)):
+            if fake:
                 errors.append(f"FABRICATED SKILL in Technical Skills: '{fake}'")
 
     # 8. Scan full document for fabrication watchlist items not in original

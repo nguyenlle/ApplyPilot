@@ -22,7 +22,7 @@ dependencies = [
     "rich>=13.0",
     "httpx>=0.24",
     "beautifulsoup4>=4.12",
-    "playwright>=1.40",
+    "playwright>=1.48",
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
     "pandas>=2.0",
@@ -30,6 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "ruff>=0.1"]
+discovery = ["python-jobspy==1.1.82"]
 
 [project.scripts]
 applypilot = "applypilot.cli:app"
@@ -52,3 +53,6 @@ artifacts = ["src/applypilot/config/*.yaml"]
 [tool.ruff]
 target-version = "py311"
 line-length = 120
+
+[tool.pytest.ini_options]
+markers = ["browser: launches a real local Chromium browser"]

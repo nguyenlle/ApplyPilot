@@ -5,6 +5,20 @@ All notable changes to ApplyPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — reliability hardening fork
+
+- Record upstream baseline and inspect upstream fixes before integration.
+- Add exact URL targeting, owned atomic claims, attempt ledger, conservative crash recovery,
+  bounded delayed retries, daily/company budgets and terminal-state protection.
+- Add network-isolated captured-form dry runs with no job/attempt state mutation.
+- Require job-specific document manifests and hashes; prevent same-title overwrite and stale PDFs.
+- Tighten truthful profile, résumé and cover validation; keep unknown answers unknown.
+- Preserve dedicated browser sessions with exclusive locks and owned-process cleanup.
+- Add restricted live native-form submission gate; unsupported dynamic ATS sites remain unvalidated.
+- Add deterministic eligibility filters and structured scoring rejection reasons.
+- Add meaningful doctor failures, authenticated Claude checks, tests and automatic CI.
+- Preserve AGPL-3.0 license and upstream history. No claim of production readiness or verified real submission.
+
 ## [0.2.0] - 2026-02-17
 
 ### Added

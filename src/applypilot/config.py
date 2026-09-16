@@ -2,6 +2,7 @@
 
 import os
 import platform
+import re
 import shutil
 from pathlib import Path
 
@@ -28,6 +29,104 @@ APPLY_WORKER_DIR = APP_DIR / "apply-workers"
 # Package-shipped config (YAML registries)
 PACKAGE_DIR = Path(__file__).parent
 CONFIG_DIR = PACKAGE_DIR / "config"
+
+
+def resolve_claude() -> str | None:
+    """Resolve Claude, including native installs not added to the current PATH.
+
+    An explicit but invalid override fails closed rather than silently selecting
+    a different executable. No subprocess or authentication is performed here.
+    """
+    override = os.environ.get("CLAUDE_PATH", "").strip()
+    if override:
+        candidate = Path(override).expanduser()
+        return str(candidate.resolve()) if candidate.is_file() else None
+    found = shutil.which("claude")
+    if found:
+        return found
+    for name in ("claude.exe", "claude", "claude.cmd"):
+        candidate = Path.home() / ".local" / "bin" / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def configured_llm_provider() -> str | None:
+    """Return the actual provider precedence used by llm.py, without secrets."""
+    if os.environ.get("LLM_URL", "").strip():
+        return "local"
+    if os.environ.get("GEMINI_API_KEY", "").strip():
+        return "gemini"
+    if os.environ.get("OPENAI_API_KEY", "").strip():
+        return "openai"
+    return None
+
+
+def profile_safety_reasons(profile: dict | None = None) -> list[str]:
+    """Find malformed/sample values without inventing missing personal facts.
+
+    Unknown legal and voluntary answers may remain null; the browser must stop
+    or request a human answer if a required form asks for them. Validation is
+    structural and cannot establish the truth of supplied facts.
+    """
+    data = load_profile() if profile is None else profile
+    if not isinstance(data, dict):
+        return ["Profile must be a JSON object."]
+    reasons: list[str] = []
+    personal = data.get("personal")
+    if not isinstance(personal, dict):
+        return ["Profile requires a personal object with full_name and email."]
+    for field in ("full_name", "email"):
+        value = personal.get(field)
+        if not isinstance(value, str) or not value.strip():
+            reasons.append(f"personal.{field} is required.")
+    email = personal.get("email")
+    if isinstance(email, str) and email.strip():
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email.strip()):
+            reasons.append("personal.email is not a valid email address.")
+        elif email.rsplit("@", 1)[-1].lower() in {"example.com", "example.org", "example.net"}:
+            reasons.append("personal.email still uses an example domain.")
+    sections = ("work_authorization", "availability", "compensation", "experience",
+                "skills_boundary", "resume_facts", "screening", "eeo_voluntary")
+    for section in sections:
+        if section in data and not isinstance(data[section], dict):
+            reasons.append(f"{section} must be an object; individual unknown values may be null.")
+
+    sample_values = {"firstname lastname", "your name", "your city", "your country",
+                     "your state/province", "your university", "company a", "company b",
+                     "project x", "project y", "123 main st", "555-123-4567", "changeme"}
+
+    def visit(value, path):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                visit(item, f"{path}.{key}" if path else str(key))
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(item, f"{path}[{index}]")
+        elif isinstance(value, str):
+            normalized = value.strip().lower()
+            if (normalized in sample_values or normalized.startswith("your_")
+                    or "sample resume candidate" in normalized
+                    or "/yourprofile" in normalized or "/yourusername" in normalized):
+                reasons.append(f"{path} contains an example placeholder; replace it or use null.")
+
+    visit(data, "")
+    authorization = data.get("work_authorization")
+    if isinstance(authorization, dict):
+        for key in ("legally_authorized_to_work", "require_sponsorship"):
+            value = authorization.get(key)
+            if value is not None and not isinstance(value, (str, bool)):
+                reasons.append(f"work_authorization.{key} must be a supplied answer or null.")
+    return reasons
+
+
+def validate_profile_for_application(profile: dict | None = None) -> dict:
+    """Return the unchanged profile or reject malformed/example candidate data."""
+    data = load_profile() if profile is None else profile
+    reasons = profile_safety_reasons(data)
+    if reasons:
+        raise ValueError("Invalid application profile: " + " ".join(reasons))
+    return data
 
 
 def get_chrome_path() -> str:
@@ -98,7 +197,10 @@ def load_profile() -> dict:
         raise FileNotFoundError(
             f"Profile not found at {PROFILE_PATH}. Run `applypilot init` first."
         )
-    return json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+    data = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("Profile must be a JSON object.")  # noqa: TRY004 - invalid file content
+    return data
 
 
 def load_search_config() -> dict:
@@ -128,8 +230,9 @@ def is_manual_ats(url: str | None) -> bool:
         return False
     sites_cfg = load_sites_config()
     domains = sites_cfg.get("manual_ats", [])
-    url_lower = url.lower()
-    return any(domain in url_lower for domain in domains)
+    from urllib.parse import urlsplit
+    host = (urlsplit(url).hostname or "").lower()
+    return any(host == domain.lower() or host.endswith("." + domain.lower()) for domain in domains)
 
 
 def load_blocked_sites() -> tuple[set[str], list[str]]:
@@ -206,18 +309,18 @@ def get_tier() -> int:
     """
     load_env()
 
-    has_llm = any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL"))
+    has_llm = configured_llm_provider() is not None
     if not has_llm:
         return 1
 
-    has_claude = shutil.which("claude") is not None
+    has_claude = resolve_claude() is not None
     try:
         get_chrome_path()
         has_chrome = True
     except FileNotFoundError:
         has_chrome = False
 
-    if has_claude and has_chrome:
+    if has_claude and has_chrome and shutil.which("node") and shutil.which("npx"):
         return 3
 
     return 2
@@ -238,11 +341,13 @@ def check_tier(required: int, feature: str) -> None:
     _console = Console(stderr=True)
 
     missing: list[str] = []
-    if required >= 2 and not any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL")):
-        missing.append("LLM API key — run [bold]applypilot init[/bold] or set GEMINI_API_KEY")
+    if required >= 2 and configured_llm_provider() is None:
+        missing.append("LLM credentials — set OPENAI_API_KEY, GEMINI_API_KEY, or LLM_URL")
     if required >= 3:
-        if not shutil.which("claude"):
+        if not resolve_claude():
             missing.append("Claude Code CLI — install from [bold]https://claude.ai/code[/bold]")
+        if not shutil.which("node") or not shutil.which("npx"):
+            missing.append("Node.js and npx — install Node.js and make both available on PATH")
         try:
             get_chrome_path()
         except FileNotFoundError:

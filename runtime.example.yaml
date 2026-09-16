@@ -1,0 +1,14 @@
+# Copy to $APPLYPILOT_DIR/runtime.yaml; do not put personal facts here.
+min_score: 7
+max_per_run: 1
+max_per_day: 10
+workers: 1
+max_attempts: 3
+retry_delay_seconds: 60
+max_retry_delay_seconds: 3600
+lease_seconds: 900
+apply_timeout_seconds: 600
+max_per_company: 2
+company_period_days: 7
+poll_interval_seconds: 60
+discovery_interval_seconds: 1800

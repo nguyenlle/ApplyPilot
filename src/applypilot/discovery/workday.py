@@ -14,14 +14,16 @@ import sqlite3
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 
 import yaml
 
 from applypilot import config
 from applypilot.config import CONFIG_DIR
-from applypilot.database import get_connection, init_db
+from applypilot.database import get_connection, init_db, store_jobs
+from applypilot.eligibility import normalize_posting_date
+from applypilot.locfilter import load_location_filter, location_ok, title_ok
 
 log = logging.getLogger(__name__)
 
@@ -40,35 +42,8 @@ def load_employers() -> dict:
 
 # -- Location filtering from search config -----------------------------------
 
-def _load_location_filter(search_cfg: dict | None = None):
-    """Load location accept/reject lists from search config."""
-    if search_cfg is None:
-        search_cfg = config.load_search_config()
-
-    accept = search_cfg.get("location_accept", [])
-    reject = search_cfg.get("location_reject_non_remote", [])
-    return accept, reject
-
-
-def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
-    """Check if a job location passes the user's location filter."""
-    if not location:
-        return True
-
-    loc = location.lower()
-
-    if any(r in loc for r in ("remote", "anywhere", "work from home", "wfh", "distributed")):
-        return True
-
-    for r in reject:
-        if r.lower() in loc:
-            return False
-
-    for a in accept:
-        if a.lower() in loc:
-            return True
-
-    return False
+_load_location_filter = load_location_filter
+_location_ok = location_ok
 
 
 # -- HTML stripper -----------------------------------------------------------
@@ -207,8 +182,8 @@ def search_employer(
     while True:
         try:
             data = workday_search(employer, search_text, limit=page_size, offset=offset)
-        except Exception as e:
-            log.error("%s: API error at offset %d: %s", employer["name"], offset, e)
+        except Exception:
+            log.exception('%s: API error at offset %d', employer['name'], offset)
             break
 
         if total is None:
@@ -221,9 +196,9 @@ def search_employer(
 
         for j in postings:
             loc = j.get("locationsText", "")
-            if location_filter and accept_locs is not None and reject_locs is not None:
-                if not _location_ok(loc, accept_locs, reject_locs):
-                    continue
+            if (location_filter and accept_locs is not None and reject_locs is not None
+                    and not _location_ok(loc, accept_locs, reject_locs)):
+                continue
 
             all_jobs.append({
                 "title": j.get("title", ""),
@@ -264,8 +239,11 @@ def _fetch_one_detail(employer: dict, job: dict) -> dict:
         job["job_req_id"] = info.get("jobReqId", "")
         job["time_type"] = info.get("timeType", "")
         job["remote_type"] = info.get("remoteType", "")
+        job["posted"] = info.get("postedOn") or job.get("posted")
+        job["valid_through"] = normalize_posting_date(info.get("validThrough"))
 
     except Exception as e:
+        log.debug("_fetch_one_detail: optional operation failed; proceeding with fallback", exc_info=True)
         job["full_description"] = ""
         job["apply_url"] = ""
         job["detail_error"] = str(e)
@@ -281,9 +259,8 @@ def fetch_details(employer: dict, jobs: list[dict]) -> list[dict]:
     errors = 0
     t0 = time.time()
 
-    for job in jobs:
+    for completed, job in enumerate(jobs, 1):
         _fetch_one_detail(employer, job)
-        completed += 1
         if "detail_error" in job:
             errors += 1
 
@@ -302,11 +279,14 @@ def fetch_details(employer: dict, jobs: list[dict]) -> list[dict]:
 
 def store_results(conn: sqlite3.Connection, jobs: list[dict], employers: dict) -> tuple[int, int]:
     """Store corporate jobs in DB. Returns (new, existing)."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     new = 0
     existing = 0
 
+    excluded = config.load_search_config().get("exclude_titles", [])
     for job in jobs:
+        if not title_ok(job.get("title"), excluded):
+            continue
         url = job.get("apply_url", "")
         if not url:
             emp = employers.get(job.get("employer_key", ""), {})
@@ -324,17 +304,16 @@ def store_results(conn: sqlite3.Connection, jobs: list[dict], employers: dict) -
         site = job.get("employer_name", "Corporate")
         strategy = "workday_api"
 
-        try:
-            conn.execute(
-                "INSERT INTO jobs (url, title, salary, description, location, site, strategy, "
-                "discovered_at, full_description, application_url, detail_scraped_at, detail_error) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (url, job.get("title"), None, short_desc, job.get("location"),
-                 site, strategy, now, full_description, url, detail_scraped_at, detail_error),
-            )
-            new += 1
-        except sqlite3.IntegrityError:
-            existing += 1
+        added, duplicate = store_jobs(conn, [{
+            "url": url, "title": job.get("title"), "company": site,
+            "description": short_desc, "location": job.get("location"),
+            "full_description": full_description, "application_url": url,
+            "detail_scraped_at": detail_scraped_at, "detail_error": detail_error,
+            "posted_raw": job.get("posted"), "date_posted": normalize_posting_date(job.get("posted")),
+            "valid_through": job.get("valid_through"), "work_mode": job.get("remote_type") or None,
+        }], site, strategy)
+        new += added
+        existing += duplicate
 
     conn.commit()
     return new, existing
@@ -359,7 +338,7 @@ def _process_one(
             reject_locs=reject_locs,
         )
     except Exception as e:
-        log.error("%s: ERROR searching '%s': %s", emp["name"], search_text, e)
+        log.exception("%s: ERROR searching '%s'", emp['name'], search_text)
         return {"employer": emp["name"], "query": search_text,
                 "found": 0, "new": 0, "existing": 0, "error": str(e)}
 
@@ -369,8 +348,8 @@ def _process_one(
 
     try:
         jobs = fetch_details(emp, jobs)
-    except Exception as e:
-        log.error("%s: ERROR fetching details for '%s': %s", emp["name"], search_text, e)
+    except Exception:
+        log.exception("%s: ERROR fetching details for '%s'", emp['name'], search_text)
 
     conn = get_connection()
     new, existing = store_results(conn, jobs, employers)
@@ -443,12 +422,11 @@ def scrape_employers(
     else:
         # Sequential mode (default)
         completed = 0
-        for key in valid_keys:
+        for completed, key in enumerate(valid_keys, 1):
             result = _process_one(
                 key, employers, search_text,
                 location_filter, accept_locs, reject_locs,
             )
-            completed += 1
             total_new += result["new"]
             total_existing += result["existing"]
             total_found += result["found"]

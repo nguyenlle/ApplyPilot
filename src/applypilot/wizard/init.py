@@ -13,7 +13,6 @@ import json
 import shutil
 from pathlib import Path
 
-import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
@@ -89,7 +88,7 @@ def _setup_profile() -> dict:
     full_name = Prompt.ask("Full name")
     profile["personal"] = {
         "full_name": full_name,
-        "preferred_name": Prompt.ask("Preferred/nickname (leave blank to use first name)", default=""),
+        "preferred_name": Prompt.ask("Preferred/nickname (leave blank if unspecified)", default=""),
         "email": Prompt.ask("Email address"),
         "phone": Prompt.ask("Phone number", default=""),
         "city": Prompt.ask("City"),
@@ -101,14 +100,13 @@ def _setup_profile() -> dict:
         "github_url": Prompt.ask("GitHub URL (optional)", default=""),
         "portfolio_url": Prompt.ask("Portfolio URL (optional)", default=""),
         "website_url": Prompt.ask("Personal website URL (optional)", default=""),
-        "password": Prompt.ask("Job site password (used for login walls during auto-apply)", password=True, default=""),
     }
 
     # -- Work Authorization --
     console.print("\n[bold cyan]Work Authorization[/bold cyan]")
     profile["work_authorization"] = {
-        "legally_authorized_to_work": Confirm.ask("Are you legally authorized to work in your target country?"),
-        "require_sponsorship": Confirm.ask("Will you now or in the future need sponsorship?"),
+        "legally_authorized_to_work": Prompt.ask("Authorized to work in target country?", choices=["Yes", "No", "Unknown"], default="Unknown"),
+        "require_sponsorship": Prompt.ask("Need sponsorship now or in future?", choices=["Yes", "No", "Unknown"], default="Unknown"),
         "work_permit_type": Prompt.ask("Work permit type (e.g. Citizen, PR, Open Work Permit — leave blank if N/A)", default=""),
     }
 
@@ -163,15 +161,15 @@ def _setup_profile() -> dict:
 
     # -- EEO Voluntary (defaults) --
     profile["eeo_voluntary"] = {
-        "gender": "Decline to self-identify",
-        "race_ethnicity": "Decline to self-identify",
-        "veteran_status": "Decline to self-identify",
-        "disability_status": "Decline to self-identify",
+        "gender": None,
+        "race_ethnicity": None,
+        "veteran_status": None,
+        "disability_status": None,
     }
 
     # -- Availability --
     profile["availability"] = {
-        "earliest_start_date": Prompt.ask("Earliest start date", default="Immediately"),
+        "earliest_start_date": Prompt.ask("Earliest start date (blank if unknown)", default=""),
     }
 
     # Save
@@ -292,7 +290,9 @@ def _setup_auto_apply() -> None:
         return
 
     # Check for Claude Code CLI
-    if shutil.which("claude"):
+    from applypilot.config import resolve_claude
+
+    if resolve_claude():
         console.print("[green]Claude Code CLI detected.[/green]")
     else:
         console.print(
@@ -301,23 +301,10 @@ def _setup_auto_apply() -> None:
             "Auto-apply won't work until Claude Code is installed."
         )
 
-    # Optional: CapSolver for CAPTCHAs
-    console.print("\n[dim]Some job sites use CAPTCHAs. CapSolver can handle them automatically.[/dim]")
-    if Confirm.ask("Configure CapSolver API key? (optional)", default=False):
-        capsolver_key = Prompt.ask("CapSolver API key")
-        # Append to existing .env or create
-        if ENV_PATH.exists():
-            existing = ENV_PATH.read_text(encoding="utf-8")
-            if "CAPSOLVER_API_KEY" not in existing:
-                ENV_PATH.write_text(
-                    existing.rstrip() + f"\nCAPSOLVER_API_KEY={capsolver_key}\n",
-                    encoding="utf-8",
-                )
-        else:
-            ENV_PATH.write_text(f"# ApplyPilot configuration\nCAPSOLVER_API_KEY={capsolver_key}\n", encoding="utf-8")
-        console.print("[green]CapSolver key saved.[/green]")
-    else:
-        console.print("[dim]Skipped. Add CAPSOLVER_API_KEY to .env later if needed.[/dim]")
+    console.print(
+        "[dim]Live applications require Claude authentication and a reviewed site adapter. "
+        "CAPTCHA, login and email-verification gates pause the application for user input.[/dim]"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +348,7 @@ def run_wizard() -> None:
     console.print()
 
     # Done — show tier status
-    from applypilot.config import get_tier, TIER_LABELS, TIER_COMMANDS
+    from applypilot.config import TIER_COMMANDS, TIER_LABELS, get_tier
 
     tier = get_tier()
 

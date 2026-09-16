@@ -1,14 +1,16 @@
 name: CI
 
 on:
-  workflow_dispatch:  # manual trigger only
+  workflow_dispatch:
+  push:
+  pull_request:
 
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12"]
 
     steps:
       - name: Checkout
@@ -20,7 +22,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,discovery]" pypdf
+
+      - name: Browser runtime
+        run: python -m playwright install --with-deps chromium
 
       - name: Lint
         run: ruff check src/
