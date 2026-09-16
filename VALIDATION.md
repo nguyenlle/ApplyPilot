@@ -38,9 +38,9 @@ Current live findings:
   checks do not establish billing availability. No separate Claude login is needed.
 
 The complete suite passes in the clean Python 3.12 installation: **254 tests in
-45.38 seconds**. `ruff check src/` and `pip check` also pass. These are Windows
-results for this migration; the prior Linux CI results below cover the earlier
-implementation until a new CI run finishes.
+45.38 seconds**. `ruff check src/` and `pip check` also pass. Linux CI passed on
+Python 3.11 and 3.12 for implementation commit `1343822`:
+[run 35109164190](https://github.com/nguyenlle/ApplyPilot/actions/runs/35109164190).
 
 The OpenAI runner's focused 23 tests pass, including actual pinned MCP/Chrome
 navigation, inline snapshots, SHA-approved synthetic PDF selection, denial of
