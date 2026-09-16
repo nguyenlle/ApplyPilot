@@ -3,6 +3,8 @@
 ApplyPilot finds job postings, enriches descriptions, scores them against your
 profile, tailors a résumé, writes a cover letter, and uses OpenAI Responses with
 guarded Playwright MCP tools to operate application forms. SQLite tracks jobs and attempts.
+Scoring and document preparation can also use a supervised local Codex task through
+the [private handoff workflow](LOCAL_HANDOFF.md), without direct model API calls.
 
 This fork of [Pickle-Pixel/ApplyPilot](https://github.com/Pickle-Pixel/ApplyPilot)
 preserves the six-stage pipeline and upstream AGPL-3.0 license and history.
@@ -56,6 +58,9 @@ On Linux, activate the venv and install browser system dependencies with
 private state directory. `use-local.ps1` is the Windows workspace helper.
 
 ## Configure and run
+
+For supervised preparation using your local Codex task, follow
+[LOCAL_HANDOFF.md](LOCAL_HANDOFF.md). The commands below use the optional API pipeline.
 
 Put `profile.json`, verified `resume.txt`/`resume.pdf`, `searches.yaml`, and `.env`
 in `APPLYPILOT_DIR`. The Windows helper selects `.private/state` inside this checkout.

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — reliability hardening fork
 
+- Add supervised local Codex preparation with versioned snapshots, independently
+  reviewed claims/PDFs, stale/replay rejection and preparation-only import receipts.
+- Freeze verified PDF bytes before locked Archer form previews; distinguish local
+  file selection from employer upload and preserve application state across previews.
+- Omit empty Projects headings from rendered resumes.
+- Apply configured score thresholds to preparation counts and label prepared
+  candidates separately from full application readiness.
+
 - Replace Claude Code with a bounded OpenAI Responses tool loop over guarded Playwright MCP.
 - Stop immediately on exhausted API credit; preserve retry behavior for temporary rate limits.
 - Repair LinkedIn/modern Greenhouse description extraction and reject signup URLs as application targets.

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
+from collections.abc import Callable
 
 import typer
 from rich.console import Console
@@ -53,6 +55,40 @@ def _version_callback(value: bool) -> None:
 # Commands
 # ---------------------------------------------------------------------------
 
+def _local_action(action: Callable, *args: str) -> None:
+    """Run preparation without loading provider credentials or dispatching apply."""
+    try:
+        output = action(*args)
+    except (ValueError, OSError, sqlite3.Error) as exc:
+        console.print(f"Local preparation rejected: {exc}", style="red", markup=False)
+        raise typer.Exit(code=1) from exc
+    console.print(str(output), markup=False)
+
+
+@app.command()
+def local_export(url: str = typer.Option(..., "--url")) -> None:
+    """Export one private handoff for a local Codex task (no API calls)."""
+    from applypilot.local_handoff import export_job
+
+    _local_action(export_job, url)
+
+
+@app.command()
+def local_render(handoff: str, result: str) -> None:
+    """Validate and render a local result without importing or approving."""
+    from applypilot.local_handoff import render_result
+
+    _local_action(render_result, handoff, result)
+
+
+@app.command()
+def local_import(handoff: str, result: str, review: str = typer.Option(..., "--review")) -> None:
+    """Import reviewed preparation only; never mark an application submitted."""
+    from applypilot.local_handoff import import_result
+
+    _local_action(import_result, handoff, result, review)
+
+
 @app.callback()
 def main(
     version: bool = typer.Option(
@@ -86,8 +122,8 @@ def run(
         help=(
             "Validation strictness for tailor/cover stages. "
             "strict: banned words = errors, judge must pass. "
-            "normal: banned words = warnings only (default, recommended for Gemini free tier). "
-            "lenient: banned words ignored, LLM judge skipped (fastest, fewest API calls)."
+            "normal: banned words = warnings only (default). "
+            "lenient: banned words ignored. Factual checks and the judge remain required in every mode."
         ),
     ),
 ) -> None:
@@ -343,9 +379,9 @@ def status() -> None:
     summary.add_row("Scored or filtered", str(stats["scored"]))
     summary.add_row("Pending scoring", str(stats["unscored"]))
     summary.add_row("Tailored resumes", str(stats["tailored"]))
-    summary.add_row("Pending tailoring (7+)", str(stats["untailored_eligible"]))
+    summary.add_row(f"Pending tailoring ({stats['min_score']}+)", str(stats["untailored_eligible"]))
     summary.add_row("Cover letters", str(stats["with_cover_letter"]))
-    summary.add_row("Ready to apply", str(stats["ready_to_apply"]))
+    summary.add_row(f"Prepared candidates ({stats['min_score']}+)", str(stats["ready_to_apply"]))
     summary.add_row("Applied", str(stats["applied"]))
     summary.add_row("Apply errors", str(stats["apply_errors"]))
 

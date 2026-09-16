@@ -235,7 +235,7 @@ def assemble_resume_text(data: dict, profile: dict) -> str:
 
     # Header -- always code-injected from profile
     lines.append(personal.get("full_name", ""))
-    lines.append(sanitize_text(data.get("title", "Software Engineer")))
+    lines.append(sanitize_text(data.get("title", "")))
 
     # Location from search config or profile -- leave blank if not available
     # The location line is optional; the original used a hardcoded city.
@@ -280,7 +280,8 @@ def assemble_resume_text(data: dict, profile: dict) -> str:
         lines.append("")
 
     # Projects
-    lines.append("PROJECTS")
+    if data.get("projects"):
+        lines.append("PROJECTS")
     for entry in data.get("projects", []):
         lines.append(sanitize_text(entry.get("header", "")))
         if entry.get("subtitle"):

@@ -553,7 +553,7 @@ def run_pipeline(
     console.print(f"    Scored:         {final['scored']}")
     console.print(f"    Tailored:       {final['tailored']}")
     console.print(f"    Cover letters:  {final['with_cover_letter']}")
-    console.print(f"    Ready to apply: {final['ready_to_apply']}")
+    console.print(f"    Prepared candidates ({final['min_score']}+): {final['ready_to_apply']}")
     console.print(f"    Applied:        {final['applied']}")
     console.print(f"{'=' * 70}\n")
 

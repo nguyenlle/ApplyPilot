@@ -282,7 +282,10 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
     if conn is None:
         conn = get_connection()
 
-    stats: dict = {}
+    from applypilot.policy import load_policy
+
+    min_score = load_policy().min_score
+    stats: dict = {"min_score": min_score}
 
     # Total jobs
     stats["total"] = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
@@ -331,8 +334,9 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
 
     stats["untailored_eligible"] = conn.execute(
         "SELECT COUNT(*) FROM jobs "
-        "WHERE fit_score >= 7 AND full_description IS NOT NULL "
-        "AND tailored_resume_path IS NULL"
+        "WHERE fit_score >= ? AND full_description IS NOT NULL "
+        "AND NULLIF(tailored_resume_path, '') IS NULL",
+        (min_score,),
     ).fetchone()[0]
 
     stats["tailor_exhausted"] = conn.execute(
@@ -363,20 +367,19 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
 
     stats["ready_to_apply"] = conn.execute(
         "SELECT COUNT(*) FROM jobs "
-        "WHERE tailored_resume_path IS NOT NULL "
+        "WHERE NULLIF(tailored_resume_path, '') IS NOT NULL AND fit_score >= ? "
         "AND applied_at IS NULL "
-        "AND application_url IS NOT NULL "
-        "AND (apply_status IS NULL OR apply_status IN ('queued','retryable'))"
+        "AND NULLIF(application_url, '') IS NOT NULL AND claim_token IS NULL "
+        "AND (apply_status IS NULL OR apply_status IN ('queued','retryable'))",
+        (min_score,),
     ).fetchone()[0]
-
-    from applypilot.policy import load_policy
 
     stats["application_states"] = dict(conn.execute(
         "SELECT CASE WHEN apply_status IS NOT NULL THEN apply_status "
         "WHEN NULLIF(tailored_resume_path, '') IS NOT NULL AND fit_score >= ? "
         "THEN 'queued' ELSE 'preparation_pending' END AS state, COUNT(*) "
         "FROM jobs GROUP BY state",
-        (load_policy().min_score,),
+        (min_score,),
     ).fetchall())
     stats["failure_categories"] = dict(conn.execute(
         "SELECT error_category, COUNT(*) FROM jobs WHERE error_category IS NOT NULL "

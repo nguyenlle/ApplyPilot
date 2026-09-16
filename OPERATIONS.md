@@ -63,6 +63,12 @@ sponsorship is required. A missing posted date does not prove a job is fresh.
 
 ## Commands
 
+For supervised scoring and writing without a direct model API call, use
+[the local handoff workflow](LOCAL_HANDOFF.md). The task authors a versioned result,
+a separate reviewer checks claims and PDFs, and an explicit import updates only
+preparation. The full doctor still describes API/browser readiness; it is not a
+requirement for the three local handoff commands. Existing private state is required.
+
 ```powershell
 . .\use-local.ps1
 applypilot doctor --tier 1          # local discovery readiness

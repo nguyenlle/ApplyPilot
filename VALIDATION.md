@@ -1,6 +1,61 @@
 # Validation checkpoints
 
-## 2026-09-16: OpenAI migration and Archer preview
+## 2026-09-16: supervised local Codex preparation
+
+This checkpoint adds a working preparation route without direct model API calls.
+It does not qualify live employer uploads, submission, or unattended operation.
+The optional API runner retains the quota limitation described in the historical
+checkpoint below; API credit is not required for the three local handoff commands.
+
+- A separate local Codex task authored an actual Archer resume/cover pair. An
+  independent reviewer checked all 45 claims against the original resume and
+  inspected every page of both final PDFs (one page each). Empty Projects heading
+  removed. Both documents retain original employers, historical titles, dates,
+  metrics, education and supported skills without adding thermal expertise.
+- Strict v2 export/result/review checks passed. Import changed only seven
+  preparation fields on the exact Archer job. All other jobs, application fields
+  and attempt rows remained unchanged. Both artifacts verified against the
+  committed receipt; a second import was rejected with no state changes.
+- Archer's honest score remains 6/10, below the unchanged 7/10 threshold. The five
+  stored jobs include no independently established >=7 match. A status counter
+  that incorrectly counted below-threshold documents was reproduced on real data,
+  fixed and independently reviewed. Prepared-candidate counts are not a claim
+  that full eligibility, artifact or live-adapter gates have passed.
+- Adverse tests cover strict schemas, secret-field projection, source/job drift,
+  partial/incorrect evidence, reviewer separation, page/hash coverage, path/link
+  escape, replay/concurrency, atomic rollback and process crashes. Two discovered
+  defects were fixed and retested: shared resume/cover text cannot use job-only
+  evidence; an approval file left by a crash cannot verify without a committed
+  database receipt. Local PDFs cannot be silently recertified after regeneration.
+- Native browser fixtures prove immutable verified file bytes are selected into
+  the exact inputs. Attempted asynchronous POST uploads, delayed requests and
+  beacons are blocked. Repeated previews preserve the complete jobs/attempts state.
+- Two actual Archer page previews filled 14 known fields, replayed the cached city
+  selection and selected both verified PDF buffers locally. Complete SQLite dumps
+  matched before/after each run and across runs. Both screenshots were inspected.
+  The site displayed attachment errors because upload initialization was blocked
+  (`presigned_fields`); no real PDF-upload request arose. Thirteen requests were
+  blocked per run. This verifies locked local selection, not employer upload or
+  submission. No application was submitted.
+- Updated editable installation with declared `pypdf` dependency and `pip check`
+  passed in the second private virtual environment. Whole-source Ruff passed.
+- Final full suite: **362 passed, 3 skipped in 68.66 seconds**, Windows/Python3.12
+  in the second private environment, including native Chromium tests. Skips were
+  only symlink fixtures denied by Windows permissions; hardlink/path-escape tests
+  passed. Independent local-handoff/pipeline review also passed 124 tests with the
+  same three skips before the final status regression was added.
+
+Private evidence includes the v2 handoff's result, independent review, before/after
+state snapshots and import receipt under `.private/state/local-handoffs/`, plus
+test logs under `.private/`. These contain private applicant data and are not
+published. See [LOCAL_HANDOFF.md](LOCAL_HANDOFF.md) for exact operating commands.
+
+Remaining work: identify a qualifying current job, qualify its real upload and
+submission transport, resolve required unknown answers/authentication, and verify
+one controlled submission before any live batch/parallel/continuous validation.
+The current milestone authorizes preparation and locked preview only.
+
+## Historical checkpoint — 2026-09-16: OpenAI migration and Archer preview
 
 The OpenAI key is configured and Git-ignored. A real Chat Completions scoring call
 was attempted. The API returned HTTP 429 with `type=insufficient_quota` and

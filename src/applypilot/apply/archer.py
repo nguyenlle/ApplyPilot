@@ -68,6 +68,8 @@ def validate_contract(observed: list[dict]) -> str:
         field = actual[key]
         if _normalize(field.get("label", "")) != label or field.get("required") is not required:
             raise ValueError(f"Archer field label/requiredness changed: {key}")
+        if key in {"resume", "cover_letter"} and field.get("type") != "file":
+            raise ValueError(f"Archer document input type changed: {key}")
     schema = [{k: f.get(k) for k in ("id", "label", "required", "type", "role")} for f in observed]
     return hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()
 
@@ -119,6 +121,25 @@ def cached_location(path: Path, profile: dict) -> tuple[dict, str] | None:
         return None
 
 
+def verified_file_payloads(job: dict) -> dict[str, dict]:
+    """Freeze the exact approved bytes before handing them to the browser.
+
+    Passing a path would allow the file to change after validation and before
+    Playwright reads it. Buffer payloads keep provenance tied to selected bytes.
+    """
+    payloads = {}
+    for kind, path in verify_job_artifacts(job).items():
+        content = path.read_bytes()
+        manifest = json.loads(path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+        digest = hashlib.sha256(content).hexdigest()
+        if (kind not in {"resume", "cover_letter"} or not content.startswith(b"%PDF-")
+                or digest != manifest.get("pdf_sha256")):
+            raise ValueError("Document PDF changed before local file selection")
+        payloads[kind] = {"path": str(path), "sha256": digest,
+                          "payload": {"name": path.name, "mimeType": "application/pdf", "buffer": content}}
+    return payloads
+
+
 def preview(job: dict, *, profile: dict | None = None, output_dir: Path | None = None) -> dict:
     """Load the real form read-only, disable network, then fill explicit known data.
 
@@ -132,6 +153,7 @@ def preview(job: dict, *, profile: dict | None = None, output_dir: Path | None =
     output = output_dir or config.LOG_DIR / "archer-previews" / uuid.uuid4().hex
     output.mkdir(parents=True, exist_ok=True)
     locked = False
+    stage = "public_page_load"
     blocked, filled, missing, controls = [], [], [], []
     evidence = {"adapter": "archer_greenhouse_preview_v1", "job_url": job["url"],
                 "application_url": APPLICATION_URL, "submitted": False,
@@ -157,7 +179,8 @@ def preview(job: dict, *, profile: dict | None = None, output_dir: Path | None =
                 if not locked and request.method == "GET" and (request.url == APPLICATION_URL or static):
                     route.continue_()
                 else:
-                    blocked.append({"method": request.method, "host": parts.hostname, "path": parts.path})
+                    blocked.append({"method": request.method, "host": parts.hostname, "path": parts.path,
+                                    "stage": stage, "network_locked": locked})
                     route.abort("blockedbyclient")
             context.route("**/*", intercept)
             context.route_web_socket("**/*", lambda ws: ws.close())
@@ -178,6 +201,8 @@ def preview(job: dict, *, profile: dict | None = None, output_dir: Path | None =
                 raise ValueError("Archer employer/title does not match")
             # From this point even GETs are denied before any candidate data enters DOM.
             locked = True
+            evidence["network_locked_before_candidate_input"] = True
+            stage = "candidate_fields"
             observed = page.locator("input[id],textarea[id],select[id]").evaluate_all("""els => els.map(el=>({
                 id:el.id, label:[...(el.labels||[])].map(l=>l.innerText).join(' '),
                 required:el.required||el.getAttribute('aria-required')==='true',
@@ -223,13 +248,26 @@ def preview(job: dict, *, profile: dict | None = None, output_dir: Path | None =
                     field.fill(value)
                 filled.append({"field": key, "profile_path": fact_path})
             try:
-                files = verify_job_artifacts(job)
-                evidence["documents"] = {kind: str(path) for kind, path in files.items()}
+                files = verified_file_payloads(job)
+                evidence["documents"] = {kind: item["path"] for kind, item in files.items()}
+                evidence["local_file_selection"] = []
+                stage = "local_file_selection"
+                for kind, item in files.items():
+                    field = page.locator(f'input[id="{kind}"]')
+                    field.set_input_files(item["payload"])
+                    selected = field.evaluate("el => [...el.files].map(f => ({name:f.name,size:f.size}))")
+                    evidence["local_file_selection"].append({
+                        "kind": kind, "field_id": kind, "sha256": item["sha256"],
+                        "name": item["payload"]["name"], "size": len(item["payload"]["buffer"]),
+                        "set_input_files_completed": True, "observed_files": selected,
+                        "external_upload_verified": False,
+                    })
             except ValueError as exc:
                 missing.append({"field": "resume", "reason": str(exc)})
             evidence.update(status="needs_input" if missing or controls else "preview_only", filled=filled,
                             missing_fields=missing, unresolved_controls=controls,
-                            limitations=["No submission transport validated", "No external upload attempted",
+                            limitations=["No submission transport validated", "Employer upload is not verified; outbound requests are blocked",
+                                         "Page scripts may clear selected files after a blocked upload",
                                          "CAPTCHA and live location lookup remain unvalidated"])
             page.screenshot(path=str(output / "form.png"), full_page=True)
             (output / "form.html").write_text(page.content(), encoding="utf-8")
@@ -237,8 +275,8 @@ def preview(job: dict, *, profile: dict | None = None, output_dir: Path | None =
         except (ValueError, OSError, PlaywrightError) as exc:
             evidence.update(error=str(exc), status="form_changed")
         finally:
+            browser.close()
             evidence["blocked_requests"] = blocked
             evidence["evidence_path"] = str(output / "evidence.json")
             (output / "evidence.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
-            browser.close()
     return evidence
