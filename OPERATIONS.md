@@ -130,6 +130,23 @@ Archer-specific answers belong in `profile.json` under `employer_answers.archer`
 optional `sms_consent`. Legal given/family names belong in `personal.first_name`
 and `personal.last_name`. Do not infer a name split or consent from the résumé.
 
+For developer validation of Nuro posting `8187498`,
+`applypilot.apply.nuro.local_preview(...)` accepts its exact job record, explicit
+profile, captured public Greenhouse question metadata, and a new private output
+directory. It generates a local fixture, verifies and freezes reviewed PDF bytes,
+and denies network access before candidate fields are introduced. It is not
+registered as a live submission adapter or as the `preview-form` CLI command.
+
+The employer's four-day office schedule requires an explicit
+`employer_answers.nuro.hybrid_schedule_confirmed` answer. General willingness to
+work hybrid does not supply that answer. Optional demographic fields stay blank.
+Real location autocomplete and its coordinates remain unqualified; the fixture
+does not infer them. `fixture_location` is synthetic test data only. A controlled
+multipart exercise can produce a local receipt, but its evidence always keeps
+employer upload, employer confirmation and actual submission unverified. The
+actual Greenhouse widgets, upload transport, CAPTCHA and confirmation flow still
+need separate validation after approval of a concrete application packet.
+
 OpenAI model output remains untrusted. The runner forwards only allowlisted MCP
 functions, serializes actions, preserves function-call history, imposes deadlines
 and writes a private trace. Provider credentials never enter the MCP subprocess

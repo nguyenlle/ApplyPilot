@@ -34,6 +34,9 @@ real employer compatibility, and no real employer submission has been verified.
 - OpenAI now runs the browser tool loop directly; no Claude installation or login is required.
 - A specific Archer/Greenhouse preview adapter validates the observed form schema and
   fills explicit known answers after blocking network. Live Archer submission is still disabled.
+- A Nuro-specific developer fixture checks reviewed question mappings and frozen
+  document bytes without employer network access. Its synthetic confirmation does
+  not authorize or verify a live application.
 
 Read [UPSTREAM_AUDIT.md](UPSTREAM_AUDIT.md) for reviewed issues, PRs and forks,
 [BASELINE.md](BASELINE.md) for original failures, and

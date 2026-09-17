@@ -358,6 +358,36 @@ def test_corroborated_success_is_final_with_immutable_attempt(queue):
     assert snapshot_rows(queue) == before
 
 
+@pytest.mark.parametrize("category", ["transient_network", "browser_crashed", "provider_quota", "expired"])
+@pytest.mark.parametrize("gate", [
+    {"submission_attempted": True},
+    {"submission_attempted": "true"},
+    {"submission_attempted": "false"},
+    {"submission_attempted": False, "response_received": True},
+    {"request_validated": True},
+])
+def test_transmission_evidence_overrides_non_success_category(queue, category, gate):
+    url = seed(queue)
+    job = state.select_jobs()
+    assert state.finish(job, category, {"gate": gate}) == "submission_uncertain"
+    actual = row_for(queue, url)
+    assert actual["verification_state"] == "submitted_but_unverified"
+    assert actual["next_retry_at"] is None
+    assert actual["applied_at"] is None
+    attempt = queue.conn.execute("SELECT * FROM application_attempts").fetchone()
+    assert attempt["retryability"] == "manual_review"
+    assert state.reset_retryable() == 0
+    assert state.select_jobs() is None
+
+
+def test_explicit_pre_submission_evidence_still_allows_bounded_retry(queue):
+    seed(queue)
+    job = state.select_jobs()
+    assert state.finish(job, "transient_network", {"gate": {
+        "submission_attempted": False, "request_validated": False, "response_received": False,
+    }}) == "retryable"
+
+
 def test_retry_backoff_is_bounded_and_attempt_budget_exhausts(queue):
     url = seed(queue)
     for expected_attempt in range(1, queue.policy.max_attempts + 1):

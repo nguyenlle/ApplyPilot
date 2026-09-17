@@ -1,5 +1,29 @@
 # Validation checkpoints
 
+## 2026-09-17: Nuro local fixture and submission-uncertainty persistence
+
+- Added a reviewed question contract for Nuro posting `8187498`, including exact
+  legal/schedule questions, answer options, requiredness and consent metadata.
+  Its developer fixture freezes verified document bytes and denies network before
+  introducing candidate data. It has no live employer submission transport.
+- Independent review and tests cover metadata drift, missing explicit answers,
+  altered upload bytes and synthetic confirmation failures. The factual private
+  preview selected two reviewed PDFs locally, made zero fixture POSTs, and kept
+  every job and application-attempt row unchanged. The employer-specific schedule
+  answer and real location selection remained unresolved.
+- Fixed `state.finish` so transmission evidence overrides a caller's transient
+  failure category. Twenty adverse cases reproduced the previous behavior.
+  Attempted, validated or response-received evidence now requires reconciliation;
+  explicit pre-submission failures retain bounded retry behavior.
+- Full Windows/Python 3.12 suite: **480 passed, 3 skipped in 90.21 seconds**.
+  Whole-source Ruff and the changed tests passed. The initial full run could not
+  access Windows' existing pytest temporary directory; a fresh workspace
+  `--basetemp` resolved those setup errors without changing or omitting tests.
+- The Nuro tests include eight Chromium fixture cases. A unique local response
+  receipt is evidence only for the synthetic fixture. Actual Greenhouse location
+  widgets, uploads, CAPTCHA, submission and employer confirmation remain
+  unqualified. Neither tests nor document-review receipts authorize transmission.
+
 ## 2026-09-17: independently reviewed local score-only workflow
 
 The score-only route exports one existing job and its current input snapshots,

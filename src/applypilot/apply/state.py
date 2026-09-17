@@ -164,8 +164,15 @@ def finish(job: dict, category: str, evidence: dict | None = None, duration_ms: 
     policy = load_policy()
     now = now_iso()
     evidence = evidence or {}
+    gate = evidence.get("gate") or {}
+    # Enforce this at the persistence boundary, not only in individual runners.
+    # A validated request is persisted before forwarding; any transmission signal
+    # requires reconciliation even if a caller reports a transient/local failure.
+    # Truthy malformed flags are uncertainty, never evidence that no send occurred.
+    if (category != "submission_verified" and isinstance(gate, dict)
+            and any(gate.get(key) for key in ("submission_attempted", "request_validated", "response_received"))):
+        category = "submission_uncertain"
     if category == "submission_verified":
-        gate = evidence.get("gate") or {}
         confirmation = evidence.get("confirmation") or {}
         valid = (evidence.get("browser_corroborated") is True and isinstance(gate, dict)
                  and gate.get("attempt_id") == token and gate.get("job_url") == job["url"]

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — reliability hardening fork
 
+- Quarantine possible submissions at the result-persistence boundary even when a
+  caller reports a transient failure; require reconciliation before another attempt.
+- Add an exact Nuro question contract and network-isolated developer fixture for
+  mapped answers, verified document bytes and synthetic confirmation handling.
+  Missing employer-specific schedule answers and real location selection stay unresolved.
+
 - Add independently reviewed score-only local imports without requiring document
   generation; preserve unknown eligibility and update only score fields.
 - Allow reviewed employer requisitions to distinguish same-title jobs while
