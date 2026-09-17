@@ -29,6 +29,8 @@ real employer compatibility, and no real employer submission has been verified.
 - Restricted browser tools and a native-form gate check identity, answers, consent,
   upload bytes and confirmation evidence before recording verified success.
 - Configurable thresholds, volume controls and status/failure reporting support bounded runs.
+- Local score-only handoffs require independent, hash-bound assessment reviews and
+  update scores without generating documents or changing application state.
 - OpenAI now runs the browser tool loop directly; no Claude installation or login is required.
 - A specific Archer/Greenhouse preview adapter validates the observed form schema and
   fills explicit known answers after blocking network. Live Archer submission is still disabled.
@@ -60,7 +62,34 @@ private state directory. `use-local.ps1` is the Windows workspace helper.
 ## Configure and run
 
 For supervised preparation using your local Codex task, follow
-[LOCAL_HANDOFF.md](LOCAL_HANDOFF.md). The commands below use the optional API pipeline.
+[LOCAL_HANDOFF.md](LOCAL_HANDOFF.md). With private profile, resume and search files
+configured and an existing discovered job, you can score one exact posting locally:
+
+```powershell
+applypilot local-score-export --url "EXACT_STORED_JOB_URL"
+# Author score-result.json, then obtain an independent score-review.json.
+applypilot local-score-import "HANDOFF_JSON" "SCORE_RESULT_JSON" --review "SCORE_REVIEW_JSON"
+```
+
+The export binds the job and current input snapshots. The author supplies an honest
+score, strengths and gaps with exact source quotes; a distinct reviewer checks the
+score and every assessment. Import validates their hashes, rejects stale or reused
+handoffs, and updates only `fit_score`, `score_reasoning`, `scored_at` and the receipt.
+These commands make no model API calls, generate no PDFs and do not change
+application fields, artifacts or attempts. Eligibility remains `not_assessed`;
+unknown salary, location, sponsorship and open status remain visible where applicable.
+A fit score is not permission or eligibility to apply. Export a fresh handoff if
+you later prepare documents.
+
+For reviewed discovery ingestion, `verified_requisition_id` can identify an official
+employer requisition. Combined with the employer name, it preserves distinct
+same-title jobs while deduplicating location variants of one requisition. Retain
+the official evidence and centrally review cross-source aliases and duplicate
+posting templates before importing. An unverified board ID or a different posting
+ID alone does not establish a distinct job; this field is not an automatic
+deduplication guarantee.
+
+The commands below use the optional API pipeline.
 
 Put `profile.json`, verified `resume.txt`/`resume.pdf`, `searches.yaml`, and `.env`
 in `APPLYPILOT_DIR`. The Windows helper selects `.private/state` inside this checkout.

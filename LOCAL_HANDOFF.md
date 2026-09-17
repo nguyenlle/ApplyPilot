@@ -67,7 +67,55 @@ local file selection from an employer upload. It does not establish live upload,
 final submission or confirmation support. Other ATS workflows need their own
 reviewed adapters and validation.
 
-## Version 2 contract
+## Score-only preparation
+
+For discovery batches, score each job without generating documents:
+
+```powershell
+applypilot local-score-export --url "EXACT_QUEUED_JOB_URL"
+applypilot local-score-import "HANDOFF_JSON" "SCORE_RESULT_JSON" --review "SCORE_REVIEW_JSON"
+```
+
+The export reuses the issued version 2 snapshot and replaces task directions with
+score-only instructions. Write `score-result.json` and a separate independent
+`score-review.json` beside it. Import changes only `fit_score`, `score_reasoning`
+and `scored_at`, plus the consumed-handoff receipt. It generates no documents,
+approvals, application claims or attempts. To prepare documents later, export a
+fresh handoff after the score import.
+
+The strict score-result schema is version 1, `kind: "score_only"`, with
+`source: "local_codex_task"`, `author`, `handoff_sha256`, exact `job_url`, `score`,
+`strengths`, `gaps`, and `eligibility`. `score` contains integer `value` from1–10
+and a `reasoning` assessment. `strengths` and `gaps` are assessment arrays.
+Each assessment has `text` and `evidence`; each evidence item has `source`
+(`resume`, `profile` or `job`) and an exact whitespace-normalized `quote`.
+Reasoning and strengths require applicant evidence; a requirement quote may
+support a gap, but the reviewer must inspect the entire resume before judging
+experience unestablished. Missing evidence does not prove inability.
+
+Compute `eligibility` with `local_score.eligibility_summary(...)`; its decision
+stays `not_assessed`. Fit scores do not prove open status, sponsorship or salary.
+The reviewer must check the actual numeric score as well as all assessments.
+The review has exactly `version: 1`, `kind`, `source`, distinct `reviewer`,
+`handoff_sha256`, `result_sha256`, `semantic_assessments_checked: true`, `notes`
+and `assessments`. Each assessment review contains `assessment_sha256` (canonical
+`local_handoff.object_digest` of the complete assessment), `verdict: "supported"`
+and substantive `notes`. Review coverage must be exhaustive.
+
+For batches, retain one source ledger per worker, centralize database writes,
+deduplicate before importing jobs, and process one reviewed handoff at a time.
+The importer accepts no arbitrary SQL/update fields. A verified official employer
+requisition may be passed to discovery as `verified_requisition_id`; retain its
+source evidence in the ledger. This distinguishes genuinely different same-title
+roles and collapses location variants of the same requisition. Unverified board
+IDs must not be used for this assertion. Check cross-source aliases and duplicate
+descriptions separately; a different posting ID alone is not proof of a new job.
+
+Count current reviewed matches separately from raw leads. Keep unknown salary,
+sponsorship, export-control and open-status facts visible; never use a score to
+override an explicit disqualifier or infer a guaranteed salary offer.
+
+## Version 2 document contract
 
 All JSON objects use exactly the fields described below; extra fields, duplicate
 keys and non-finite numbers are rejected. Paths are pinned to the issued folder;

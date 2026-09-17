@@ -32,7 +32,17 @@ def normalized_text(value: str | None) -> str:
 
 
 def job_fingerprint(job: dict) -> str | None:
-    """Match an exact company/title/location tuple only when all are known."""
+    """Use a reviewed employer requisition, otherwise the conservative tuple.
+
+    ``verified_requisition_id`` is an explicit importer assertion backed by an
+    official posting. It prevents distinct teams' same-title jobs being collapsed.
+    Location variants of the same employer requisition still share one identity.
+    Do not populate it from unverified board IDs or a generated identifier.
+    """
+    company = normalized_text(job.get("company"))
+    requisition = job.get("verified_requisition_id")
+    if company and isinstance(requisition, str) and requisition.strip():
+        return hashlib.sha256(f"requisition|{company}|{requisition.strip().casefold()}".encode()).hexdigest()
     parts = [normalized_text(job.get(key)) for key in ("company", "title", "location")]
     if not all(parts):
         return None

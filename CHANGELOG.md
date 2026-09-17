@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — reliability hardening fork
 
+- Add independently reviewed score-only local imports without requiring document
+  generation; preserve unknown eligibility and update only score fields.
+- Allow reviewed employer requisitions to distinguish same-title jobs while
+  deduplicating location variants of one requisition.
+
 - Add supervised local Codex preparation with versioned snapshots, independently
   reviewed claims/PDFs, stale/replay rejection and preparation-only import receipts.
 - Freeze verified PDF bytes before locked Archer form previews; distinguish local

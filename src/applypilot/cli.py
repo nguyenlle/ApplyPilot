@@ -89,6 +89,22 @@ def local_import(handoff: str, result: str, review: str = typer.Option(..., "--r
     _local_action(import_result, handoff, result, review)
 
 
+@app.command()
+def local_score_export(url: str = typer.Option(..., "--url")) -> None:
+    """Export one job for local scoring without generating documents."""
+    from applypilot.local_score import export_job
+
+    _local_action(export_job, url)
+
+
+@app.command()
+def local_score_import(handoff: str, result: str, review: str = typer.Option(..., "--review")) -> None:
+    """Import an independently reviewed score; never approve documents or apply."""
+    from applypilot.local_score import import_result
+
+    _local_action(import_result, handoff, result, review)
+
+
 @app.callback()
 def main(
     version: bool = typer.Option(

@@ -1,6 +1,41 @@
 # Validation checkpoints
 
-## 2026-09-16: supervised local Codex preparation
+## 2026-09-17: independently reviewed local score-only workflow
+
+The score-only route exports one existing job and its current input snapshots,
+then imports an independently reviewed score without requiring a model API call
+or document generation. The workflow and exact schemas are documented in
+[LOCAL_HANDOFF.md](LOCAL_HANDOFF.md).
+
+- `local-score-export` and `local-score-import` use the issued handoff registry.
+  Strict result and review schemas bind the exact job, input snapshots, result
+  hash and every assessment hash. Reasoning and strengths require applicant
+  evidence; all assessments require exact source quotes and a distinct reviewer.
+  Hashes establish which material was reviewed, not whether its interpretation
+  is true. Independent semantic review remains necessary.
+- Score imports consume one handoff and change only `fit_score`,
+  `score_reasoning`, `scored_at` and its receipt. Regression tests check stale
+  inputs, replay, active/terminal jobs, malformed results, incomplete or altered
+  reviews, rollback and preservation of application state and attempts. No PDF,
+  artifact approval, application claim or employer submission is produced.
+- Eligibility stays `not_assessed`, with snapshot unknowns preserved. A high
+  score does not establish sponsorship, a qualifying salary offer or an open
+  vacancy, and cannot override a deterministic disqualifier.
+- Reviewed official requisitions can be supplied as `verified_requisition_id`
+  during ingestion. Regressions cover distinct same-title requisitions and
+  location variants of one employer requisition. Cross-source employer aliases,
+  repostings and duplicate templates still need centralized review; identifiers
+  alone do not guarantee a unique vacancy.
+- Full Windows/Python 3.12 suite: **405 passed, 3 skipped in 95.23 seconds**.
+  The three skips were Windows permission-dependent symlink fixtures.
+  **Whole-source Ruff passed.** These are local regression results, not proof
+  of employer compatibility, submission success or completion of a discovery
+  volume target.
+
+Live upload and submission validation remain outstanding. No application success
+or unattended-operation readiness is claimed by this checkpoint.
+
+## Historical checkpoint — 2026-09-16: supervised local Codex preparation
 
 This checkpoint adds a working preparation route without direct model API calls.
 It does not qualify live employer uploads, submission, or unattended operation.
