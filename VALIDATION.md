@@ -1,5 +1,24 @@
 # Validation checkpoints
 
+## 2026-09-17: required LaTeX templates and immutable build provenance
+
+- Configured template handoffs bind the original template snapshot, editable TeX,
+  build metadata/log and PDFs. Independent review covers eight file hashes,
+  all applicant claims, every PDF page, layout, source/PDF agreement and extraction.
+- Generic resume generation stops before model calls when a template is required.
+  Imported PDF/source/provenance outputs reject overwrites, including explicit
+  output paths and filesystem aliases. Legacy committed receipts still verify.
+- The private controlled build used actual pdfLaTeX without shell escape and the
+  supplied Source Sans Pro template. Both one-page PDFs passed independent review
+  of all 45 claims. The fresh validated import preserved application state and
+  attempt history; replacement documents were not uploaded or submitted.
+- Full native Windows/Python 3.12 regression: **656 passed, 3 skipped in 97.57 seconds**.
+  Source and changed-test Ruff checks and Git diff checks passed. Broad test lint
+  still reports four existing findings in unrelated browser/submission tests.
+- The first sandbox run exposed an ordinary-renderer compatibility regression,
+  corrected and retested, plus native Chrome launch restrictions. The final run
+  used normal native process access for isolated local fixtures.
+
 ## 2026-09-17: separate Greenhouse transport validation
 
 - Added a narrowly scoped Nuro validator for exact presigned upload fields,

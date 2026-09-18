@@ -10,7 +10,7 @@ import re
 from html import escape
 from pathlib import Path
 
-from applypilot.artifacts import refresh_pdf_manifest
+from applypilot.artifacts import assert_can_render, refresh_pdf_manifest
 from applypilot.config import COVER_LETTER_DIR, TAILORED_DIR
 
 log = logging.getLogger(__name__)
@@ -344,6 +344,7 @@ def render_pdf(html: str, output_path: str) -> None:
     """
     from playwright.sync_api import sync_playwright
 
+    assert_can_render(Path(output_path))
     with sync_playwright() as p:
         launch_options = {}
         if not Path(p.chromium.executable_path).is_file():
@@ -379,25 +380,31 @@ def convert_to_pdf(
         Path to the generated PDF (or HTML) file.
     """
     text_path = Path(text_path)
+    assert_can_render(text_path)
     text = text_path.read_text(encoding="utf-8")
     if text.lstrip().lower().startswith("dear"):
         if html_only:
             out = Path(output_path or text_path.with_suffix(".html"))
+            assert_can_render(out)
             out.write_text(_letter_html(text, ""), encoding="utf-8")
             return out
         return convert_letter_to_pdf(text_path, "", output_path)
+    from applypilot.latex import reject_generic_resume
+    reject_generic_resume()
     resume = parse_resume(text)
     html = build_html(resume)
 
     if html_only:
         out = output_path or text_path.with_suffix(".html")
         out = Path(out)
+        assert_can_render(out)
         out.write_text(html, encoding="utf-8")
         log.info("HTML generated: %s", out)
         return out
 
     out = output_path or text_path.with_suffix(".pdf")
     out = Path(out)
+    assert_can_render(out)
     render_pdf(html, str(out))
     if out == text_path.with_suffix(".pdf"):
         refresh_pdf_manifest(text_path)
@@ -418,7 +425,9 @@ def _letter_html(text: str, applicant_name: str) -> str:
 def convert_letter_to_pdf(text_path: Path, applicant_name: str = "",
                           output_path: Path | None = None) -> Path:
     text_path = Path(text_path)
+    assert_can_render(text_path)
     output_path = Path(output_path or text_path.with_suffix(".pdf"))
+    assert_can_render(output_path)
     render_pdf(_letter_html(text_path.read_text(encoding="utf-8"), applicant_name), str(output_path))
     if output_path == text_path.with_suffix(".pdf"):
         refresh_pdf_manifest(text_path)

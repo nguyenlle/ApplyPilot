@@ -147,6 +147,8 @@ def test_streaming_stops_after_repeated_no_progress(monkeypatch):
 
 
 def test_pipeline_document_chain_two_same_title_postings(tmp_path, monkeypatch, profile, resume_data):
+    from applypilot import config
+    monkeypatch.setattr(config, "APP_DIR", tmp_path)
     conn = database.init_db(tmp_path / "jobs.db")
     for i in (1, 2):
         conn.execute("INSERT INTO jobs(url,title,site,company,full_description,fit_score) VALUES (?,?,?,?,?,?)",

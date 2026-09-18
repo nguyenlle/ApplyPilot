@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — reliability hardening fork
 
+- Support required LaTeX templates in supervised handoffs. Bind the template,
+  editable source, compile metadata/log and PDFs to independent review and committed
+  receipts. Preserve legacy receipts and reject generic resume rendering when a
+  template is required. Guard imported output files before rendering, including
+  explicit output paths and filesystem aliases.
+
 - Add a separate, narrowly scoped Nuro Greenhouse transport validator: frozen
   PDF bytes, response-bound storage references, exact application JSON, and a
   one-use durable reservation callback. Reject ambiguous multipart, document

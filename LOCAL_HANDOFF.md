@@ -67,6 +67,36 @@ local file selection from an employer upload. It does not establish live upload,
 final submission or confirmation support. Other ATS workflows need their own
 reviewed adapters and validation.
 
+## Required LaTeX resume templates
+
+A workspace can require its own LaTeX resume template by setting
+`APPLYPILOT_RESUME_TEMPLATE` to the source file, or placing this configuration in
+private `APPLYPILOT_DIR/resume-rendering.json`:
+
+```json
+{"renderer": "latex", "template_path": "ABSOLUTE_PATH_TO_TEMPLATE"}
+```
+
+When configured, new document handoffs bind a copy of the required template.
+The generic resume renderer must not substitute its own layout. Compile the
+customized `.tex` without shell escape, preserve the supplied layout and macros,
+and record the template/source hashes, compiler command, build log and final PDF.
+Missing dependencies are a build failure, not permission to change renderers.
+The cover letter may retain its own renderer.
+After compiling, `applypilot.latex.record_latex_build(...)` records the actual
+compiler/version/argv and current file hashes; `local-render` then preserves the
+compiled resume and renders the text sidecars and cover letter. Build metadata
+records the author's account of the build and requires independent review.
+
+Independent review must check the compiled PDF against the factual result and
+the supplied template, inspect every page, and bind the editable source and build
+provenance as well as the PDFs. An existing imported resume is immutable: export
+a new handoff for new bytes. Importing a replacement prepares the documents only;
+previous approval of an older package does not authorize uploading the replacement.
+
+Without this configuration, upstream rendering defaults remain available.
+Private workspace instructions may impose additional template requirements.
+
 ## Score-only preparation
 
 For discovery batches, score each job without generating documents:
@@ -125,7 +155,7 @@ allowlists and validation rules.
 
 | File | Required content |
 | --- | --- |
-| `handoff.json` | Code-issued `version`, `id`, `source`, `created_at`, allowlisted `job`, `job_sha256`, four `inputs` with snapshot/source hashes, and preparation-only `scope`. Do not author or modify this file. |
+| `handoff.json` | Code-issued `version`, `id`, `source`, `created_at`, allowlisted `job`, `job_sha256`, four factual `inputs` with snapshot/source hashes (plus `resume-template.tex` when configured), and preparation-only `scope`. Do not author or modify this file. |
 | `result.json` | `version: 2`, `source: "local_codex_task"`, `author`, `handoff_sha256`, exact `job_url`, `score`, `resume`, `cover_paragraphs`, `claims`. |
 | `review.json` | `version: 2`, `source: "local_codex_task"`, distinct `reviewer`, `result_sha256`, `handoff_sha256`, both `semantic_claims_checked` and `all_pdf_pages_inspected` equal to `true`, `notes`, `files`, `claims`, `pdf_pages`. |
 
@@ -146,8 +176,12 @@ and cover paragraph exactly once; empty subtitles are omitted.
 
 Each review claim contains `text_sha256` (UTF-8 SHA-256 of the exact claim text),
 `verdict: "supported"`, and substantive `notes`. Coverage must be exhaustive.
-`files` maps exactly `resume-tailored.txt`, `resume-tailored.pdf`,
-`cover-letter.txt`, and `cover-letter.pdf` to their SHA-256 hashes. `pdf_pages`
+`files` maps `resume-tailored.txt`, `resume-tailored.pdf`,
+`cover-letter.txt`, and `cover-letter.pdf` to their SHA-256 hashes. A template-bound
+handoff additionally requires `resume-template.tex`, `resume-tailored.tex`,
+`latex-build.json`, and `latex-build.log`, for exactly eight file hashes. Its review
+also requires a `latex` object with `template_layout_checked`,
+`source_matches_pdf_checked`, `build_log_checked`, and `ats_text_checked` all true. `pdf_pages`
 maps the two PDF names to all actual one-based pages, e.g. `[1, 2]`. A changed
 PDF must be inspected again and its review updated; a changed result must be
 revalidated, rendered and reviewed again.

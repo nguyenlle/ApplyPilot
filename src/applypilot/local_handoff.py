@@ -170,8 +170,23 @@ def _searches(searches):
 
 
 def _sources():
-    return {"profile.json": config.PROFILE_PATH, "resume.txt": config.RESUME_PATH,
-            "resume.pdf": config.RESUME_PDF_PATH, "searches.yaml": config.SEARCH_CONFIG_PATH}
+    sources = {"profile.json": config.PROFILE_PATH, "resume.txt": config.RESUME_PATH,
+               "resume.pdf": config.RESUME_PDF_PATH, "searches.yaml": config.SEARCH_CONFIG_PATH}
+    if template := config.required_resume_template():
+        sources["resume-template.tex"] = template
+    return sources
+
+
+def _source_bytes(name, source):
+    if name == "resume-template.tex":
+        from applypilot.latex import template_bytes
+        return template_bytes(source)
+    return private_path(source).read_bytes()
+
+
+def artifact_names(handoff):
+    from applypilot.latex import BUILD_NAMES, TEMPLATE_NAME
+    return ARTIFACT_NAMES + BUILD_NAMES if TEMPLATE_NAME in handoff["inputs"] else ARTIFACT_NAMES
 
 
 def _snapshot(job):
@@ -229,14 +244,14 @@ def export_job(url: str) -> Path:
         folder.mkdir(parents=True)
         inputs = {}
         for name, source in _sources().items():
-            source = private_path(source)
-            source_hash = digest(source)
+            content = _source_bytes(name, source)
+            source_hash = hashlib.sha256(content).hexdigest()
             if name == "profile.json":
                 write(folder / name, projected_profile)
             elif name == "searches.yaml":
                 write(folder / name, projected_searches)  # JSON is a strict YAML subset.
             else:
-                private_path(folder / name).write_bytes(source.read_bytes())
+                private_path(folder / name).write_bytes(content)
             inputs[name] = {"sha256": digest(folder / name), "source_sha256": source_hash}
         handoff = {"version": VERSION, "id": folder.name, "source": SOURCE,
                    "created_at": datetime.now(UTC).isoformat(), "job": _snapshot(job),
@@ -250,6 +265,11 @@ def export_job(url: str) -> Path:
             "Render, then obtain a separately identified independent semantic and all-pages visual review.\n"
             "Review hashes bind bytes; they do not prove truth. Import only through explicit local-import.\n",
             encoding="utf-8")
+        if "resume-template.tex" in inputs:
+            with (folder / "TASK.md").open("a", encoding="utf-8") as task:
+                task.write("Required LaTeX: preserve the issued resume-template.tex layout; compile resume-tailored.tex "
+                           "without shell escape, save latex-build.log and record_latex_build. Generic resume rendering "
+                           "is forbidden. Review all eight artifact hashes and explicit latex review checks.\n")
         conn.execute("INSERT INTO local_preparation_handoffs(handoff_id,job_url,handoff_sha256,created_at) VALUES(?,?,?,?)",
                      (handoff["id"], url, digest(folder / "handoff.json"), handoff["created_at"]))
         conn.commit()
@@ -285,7 +305,7 @@ def load_current(handoff_path, conn=None):
     for name, source in _sources().items():
         item = handoff["inputs"][name]
         _keys(item, ("sha256", "source_sha256"), "input hash")
-        if digest(source) != item["source_sha256"] or digest(folder / name) != item["sha256"]:
+        if hashlib.sha256(_source_bytes(name, source)).hexdigest() != item["source_sha256"] or digest(folder / name) != item["sha256"]:
             raise HandoffValidationError("Source inputs changed since handoff")
     if read(folder / "profile.json") != _profile(config.load_profile()) or read(folder / "searches.yaml") != _searches(config.load_search_config()):
         raise HandoffValidationError("Projected input facts changed since handoff")
@@ -393,15 +413,22 @@ def render_result(handoff_path: str | Path, result_path: str | Path) -> Path:
     """Render without approving artifacts or updating the database."""
     from applypilot.scoring.pdf import convert_letter_to_pdf, convert_to_pdf
 
-    folder, _, _, resume, letter = validate_result(handoff_path, result_path)
+    folder, handoff, _, resume, letter = validate_result(handoff_path, result_path)
     for name in (*ARTIFACT_NAMES, "resume-tailored.manifest.json", "cover-letter.manifest.json"):
         private_path(folder / name)
     if any((folder / name).exists() for name in ("resume-tailored.manifest.json", "cover-letter.manifest.json")):
         raise HandoffValidationError("Approved artifact already exists; export a new handoff")
+    latex_mode = "resume-template.tex" in handoff["inputs"]
+    if latex_mode:
+        from applypilot.latex import validate_build
+        validate_build(folder, digest(handoff_path), digest(result_path), handoff["inputs"]["resume-template.tex"]["sha256"])
+        if (folder / "review.json").exists():
+            raise HandoffValidationError("Reviewed artifacts cannot be regenerated; export a new handoff")
     for name, text, renderer in (("resume-tailored", resume, convert_to_pdf), ("cover-letter", letter, convert_letter_to_pdf)):
         path = private_path(folder / f"{name}.txt")
         path.write_text(text, encoding="utf-8")
-        renderer(path)
+        if name != "resume-tailored" or not latex_mode:
+            renderer(path)
     return folder
 
 
@@ -411,8 +438,17 @@ def _validate_review(folder, handoff_path, result_path, review_path, result, res
     if private_path(review_path) != folder / "review.json":
         raise HandoffValidationError("Review must use the pinned review.json path")
     review = read(review_path)
-    _keys(review, ("version", "source", "reviewer", "result_sha256", "handoff_sha256", "semantic_claims_checked",
-                   "all_pdf_pages_inspected", "notes", "files", "claims", "pdf_pages"), "review")
+    handoff = read(handoff_path)
+    latex_mode = "resume-template.tex" in handoff["inputs"]
+    review_keys = ("version", "source", "reviewer", "result_sha256", "handoff_sha256", "semantic_claims_checked",
+                   "all_pdf_pages_inspected", "notes", "files", "claims", "pdf_pages")
+    _keys(review, review_keys + (("latex",) if latex_mode else ()), "review")
+    if latex_mode:
+        from applypilot.latex import REVIEW_KEYS, validate_build
+        validate_build(folder, digest(handoff_path), digest(result_path), handoff["inputs"]["resume-template.tex"]["sha256"])
+        _keys(review["latex"], REVIEW_KEYS, "LaTeX independent review")
+        if any(review["latex"][key] is not True for key in REVIEW_KEYS):
+            raise HandoffValidationError("Independent LaTeX source, layout, build log and ATS text review required")
     if (type(review["version"]) is not int or review["version"] != VERSION or review["source"] != SOURCE
             or review["result_sha256"] != digest(result_path) or review["handoff_sha256"] != digest(handoff_path)
             or review["semantic_claims_checked"] is not True or review["all_pdf_pages_inspected"] is not True):
@@ -421,9 +457,10 @@ def _validate_review(folder, handoff_path, result_path, review_path, result, res
     if reviewer.strip().casefold() == result["author"].strip().casefold():
         raise HandoffValidationError("Independent reviewer must differ from the draft author")
     _text(review["notes"], "review notes")
-    _keys(review["files"], ARTIFACT_NAMES, "review artifact hashes")
+    names = artifact_names(handoff)
+    _keys(review["files"], names, "review artifact hashes")
     _keys(review["pdf_pages"], ("resume-tailored.pdf", "cover-letter.pdf"), "PDF review pages")
-    for name in ARTIFACT_NAMES:
+    for name in names:
         path = private_path(folder / name)
         if digest(path) != review["files"][name]:
             raise HandoffValidationError("Artifact changed after review")

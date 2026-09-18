@@ -19,6 +19,9 @@ real employer compatibility, and no real employer submission has been verified.
 
 ## What changed
 
+- Optional required LaTeX templates bind editable source, build evidence and PDFs to
+  a fresh independent review. Configured workspaces reject generic resume rendering;
+  imported documents and their provenance cannot be overwritten by render helpers.
 - Exact job targeting and canonical deduplication retain requisition query parameters.
 - Atomic, leased application claims prevent workers from claiming the same job;
   uncertain outcomes require review, with bounded retries for known transient failures.

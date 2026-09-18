@@ -1,4 +1,6 @@
 # User data (NEVER commit)
+# Personal template instructions contain local paths; generic workflow lives in LOCAL_HANDOFF.md.
+RESUME_TEMPLATE.md
 .private/
 .venv/
 .pytest_cache/

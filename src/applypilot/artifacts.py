@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import stat
 from contextlib import closing
 from pathlib import Path
 
@@ -24,8 +25,34 @@ def _digest(path: Path) -> str:
 
 def prepare_artifact(text_path: Path) -> None:
     """Invalidate old derived files before replacing their source document."""
+    assert_can_render(text_path)
     text_path.with_suffix(".manifest.json").unlink(missing_ok=True)
     text_path.with_suffix(".pdf").unlink(missing_ok=True)
+
+
+def assert_can_render(text_path: Path) -> None:
+    """Reject an overwrite before writing bytes, not after destroying a PDF."""
+    from applypilot import config
+    text_path = Path(text_path)
+    for part in (text_path, *text_path.parents):
+        if part.is_symlink() or (part.exists() and getattr(part.stat(), "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+            raise ValueError("Rendering paths must not contain links or junctions")
+    if text_path.is_file() and text_path.stat().st_nlink > 1:
+        raise ValueError("Rendering must not overwrite a hard-linked file")
+    local = text_path.absolute().is_relative_to((config.APP_DIR / "local-handoffs").absolute())
+    if local and any((text_path.parent / name).exists() for name in
+                     ("resume-tailored.manifest.json", "cover-letter.manifest.json")):
+        raise ValueError("Imported local artifacts require a fresh handoff; regeneration is forbidden")
+    path = text_path.with_suffix(".manifest.json")
+    if path.exists():
+        if text_path.absolute().is_relative_to((config.APP_DIR / "local-handoffs").absolute()):
+            raise ValueError("Imported local artifacts require a fresh handoff; regeneration is forbidden")
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return  # A broken ordinary generic manifest can be invalidated/rebuilt.
+        if isinstance(manifest, dict) and "local_preparation" in manifest:
+            raise ValueError("Imported local artifacts require a fresh handoff; regeneration is forbidden")
 
 
 def write_manifest(job: dict, text_path: Path, *, kind: str, approved: bool,
@@ -84,6 +111,14 @@ def _verify_local_receipt(job: dict, text_path: Path, manifest: dict) -> None:
                 or receipt.get("files", {}).get(text_path.name) != manifest.get("text_sha256")
                 or receipt.get("files", {}).get(text_path.with_suffix(".pdf").name) != manifest.get("pdf_sha256")):
             raise ValueError("Local artifact differs from its committed review receipt")
+        from applypilot.latex import BUILD_NAMES
+        if any(name in receipt["files"] for name in BUILD_NAMES):
+            from applypilot.local_handoff import ARTIFACT_NAMES
+            if set(receipt["files"]) != set(ARTIFACT_NAMES + BUILD_NAMES):
+                raise ValueError("Incomplete committed LaTeX provenance")
+            for name in BUILD_NAMES:
+                if _digest(private_path(text_path.parent / name)) != receipt["files"][name]:
+                    raise ValueError("LaTeX provenance changed after committed review")
     except (sqlite3.Error, OSError, json.JSONDecodeError, TypeError) as exc:
         raise ValueError("Cannot verify committed local preparation receipt") from exc
 

@@ -471,6 +471,9 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
         log.info("No untailored jobs with score >= %d.", min_score)
         return {"approved": 0, "failed": 0, "errors": 0, "elapsed": 0.0}
 
+    from applypilot.latex import reject_generic_resume
+    reject_generic_resume()
+
     TAILORED_DIR.mkdir(parents=True, exist_ok=True)
     log.info("Tailoring resumes for %d jobs (score >= %d)...", len(jobs), min_score)
     t0 = time.time()

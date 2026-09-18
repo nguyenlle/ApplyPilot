@@ -1,5 +1,6 @@
 """ApplyPilot configuration: paths, platform detection, user data."""
 
+import json
 import os
 import platform
 import re
@@ -29,6 +30,35 @@ APPLY_WORKER_DIR = APP_DIR / "apply-workers"
 # Package-shipped config (YAML registries)
 PACKAGE_DIR = Path(__file__).parent
 CONFIG_DIR = PACKAGE_DIR / "config"
+
+
+def required_resume_template() -> Path | None:
+    """Resolve an explicitly required LaTeX template; never silently fall back."""
+    value = os.environ.get("APPLYPILOT_RESUME_TEMPLATE")
+    setting = APP_DIR / "resume-rendering.json"
+    if value is None and setting.exists():
+        def unique(pairs):
+            result = {}
+            for key, item in pairs:
+                if key in result:
+                    raise ValueError("Duplicate resume rendering configuration key")
+                result[key] = item
+            return result
+        try:
+            data = json.loads(setting.read_text(encoding="utf-8"), object_pairs_hook=unique)
+        except (OSError, ValueError) as exc:
+            raise ValueError("Cannot read required resume rendering configuration") from exc
+        if not isinstance(data, dict) or set(data) != {"renderer", "template_path"} or data["renderer"] != "latex":
+            raise ValueError("Resume rendering configuration requires renderer=latex and template_path")
+        value = data["template_path"]
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip() or not Path(value).is_absolute():
+        raise ValueError("Required LaTeX template must use an absolute path")
+    template = Path(value)
+    if not template.is_file():
+        raise ValueError("Required LaTeX resume template is missing; generic rendering is forbidden")
+    return template
 
 
 def resolve_claude() -> str | None:
