@@ -37,6 +37,11 @@ real employer compatibility, and no real employer submission has been verified.
 - A Nuro-specific developer fixture checks reviewed question mappings and frozen
   document bytes without employer network access. Its synthetic confirmation does
   not authorize or verify a live application.
+- A separate Nuro transport validator checks exact presigned uploads and application
+  JSON and requires a durable one-use reservation before a caller can forward it.
+  It performs no network requests, is not a generic Greenhouse adapter, and is not
+  registered in the live CLI. An actual response and independently checked receipt
+  remain necessary to record success.
 
 Read [UPSTREAM_AUDIT.md](UPSTREAM_AUDIT.md) for reviewed issues, PRs and forks,
 [BASELINE.md](BASELINE.md) for original failures, and

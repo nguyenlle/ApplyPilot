@@ -1,5 +1,22 @@
 # Validation checkpoints
 
+## 2026-09-17: separate Greenhouse transport validation
+
+- Added a narrowly scoped Nuro validator for exact presigned upload fields,
+  immutable PDF bytes, distinct storage objects, exact application answers and
+  a durable one-use final-request callback. The validator sends no requests and
+  is not registered as a generic live CLI adapter.
+- Adversarial checks reject ambiguous MIME headers/parameters, transformed file
+  bytes, changed document references, new consent or education facts, duplicate
+  final requests, and failed reservation callbacks.
+- Native Chromium fixtures use synthetic data and deny employer forwarding.
+  They cover browser origin-slash normalization and the renderer's exact empty
+  education/employment placeholders. A separately hash-bound cached renderer
+  test confirmed the same transformations; neither test proves an employer receipt.
+- Full Windows/Python 3.12 suite: **605 passed, 3 skipped in 85.22 seconds**.
+  Source and changed-test Ruff checks passed. Dynamic live qualification and
+  independently verified employer confirmation remain separate requirements.
+
 ## 2026-09-17: Nuro local fixture and submission-uncertainty persistence
 
 - Added a reviewed question contract for Nuro posting `8187498`, including exact

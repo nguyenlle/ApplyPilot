@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — reliability hardening fork
 
+- Add a separate, narrowly scoped Nuro Greenhouse transport validator: frozen
+  PDF bytes, response-bound storage references, exact application JSON, and a
+  one-use durable reservation callback. Reject ambiguous multipart, document
+  overwrite, changed answers/consents and replay. This validator does not send
+  requests or establish employer acceptance; dynamic live operation remains
+  separately qualified and is not enabled in the generic application runner.
+
 - Quarantine possible submissions at the result-persistence boundary even when a
   caller reports a transient failure; require reconciliation before another attempt.
 - Add an exact Nuro question contract and network-isolated developer fixture for
